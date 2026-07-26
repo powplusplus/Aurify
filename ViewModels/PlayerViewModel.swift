@@ -68,7 +68,9 @@ public class PlayerViewModel: ObservableObject {
     }
 
     deinit {
-        removeTimeObserver()
+        if let token = timeObserverToken {
+            player?.removeTimeObserver(token)
+        }
     }
 
     public func setupPlayer(with url: URL) {
@@ -200,10 +202,11 @@ public class PlayerViewModel: ObservableObject {
     private func resetHideControlsTimer() {
         hideControlsTimer?.invalidate()
         hideControlsTimer = Timer.scheduledTimer(withTimeInterval: 4.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                if self?.isPlaying == true {
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if self.isPlaying {
                     withAnimation(.easeInOut(duration: 0.3)) {
-                        self?.isControlsVisible = false
+                        self.isControlsVisible = false
                     }
                 }
             }
@@ -213,8 +216,10 @@ public class PlayerViewModel: ObservableObject {
     private func showGestureNotification(_ text: String) {
         gestureMessage = text
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            if self?.gestureMessage == text {
-                self?.gestureMessage = nil
+            Task { @MainActor [weak self] in
+                if self?.gestureMessage == text {
+                    self?.gestureMessage = nil
+                }
             }
         }
     }
