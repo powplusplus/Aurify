@@ -32,17 +32,28 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             -derivedDataPath ./build
 
-      - name: Package into IPA
+      - name: Package into IPA with Info.plist
         run: |
-          mkdir -p Payload
-          APP_PATH=$(find ./build/Build/Products -name "*.app" -o -name "Aurify" | head -n 1)
-          echo "Found app path: $APP_PATH"
-          if [ -d "$APP_PATH" ]; then
-            cp -r "$APP_PATH" Payload/
-          else
-            mkdir -p Payload/Aurify.app
-            cp -r $APP_PATH Payload/Aurify.app/
+          mkdir -p Payload/Aurify.app
+          
+          # Locate built executable or app bundle
+          TARGET_BIN=$(find ./build/Build/Products -type f -name "Aurify" | head -n 1)
+          echo "Found binary target at: $TARGET_BIN"
+          
+          if [ -f "$TARGET_BIN" ]; then
+            cp "$TARGET_BIN" Payload/Aurify.app/Aurify
+          elif [ -d "./build/Build/Products/Release-iphoneos/Aurify.app" ]; then
+            cp -r ./build/Build/Products/Release-iphoneos/Aurify.app/* Payload/Aurify.app/
           fi
+          
+          # Embed Info.plist into Payload/Aurify.app/Info.plist
+          cp Info.plist Payload/Aurify.app/Info.plist
+          
+          # Create PkgInfo and ensure execution permissions
+          echo -n "APPL????" > Payload/Aurify.app/PkgInfo
+          chmod +x Payload/Aurify.app/Aurify
+          
+          # Package IPA
           zip -r Aurify.ipa Payload
 
       - name: Upload IPA Artifact
