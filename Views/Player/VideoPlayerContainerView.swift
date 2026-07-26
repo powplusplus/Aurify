@@ -1,6 +1,10 @@
 import SwiftUI
 import AVKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
+#if canImport(UIKit)
 public struct AVPlayerViewControllerRepresentable: UIViewControllerRepresentable {
     public let player: AVPlayer?
 
@@ -20,6 +24,28 @@ public struct AVPlayerViewControllerRepresentable: UIViewControllerRepresentable
         uiViewController.player = player
     }
 }
+#elseif canImport(AppKit)
+import AppKit
+
+public struct AVPlayerViewControllerRepresentable: NSViewRepresentable {
+    public let player: AVPlayer?
+
+    public init(player: AVPlayer?) {
+        self.player = player
+    }
+
+    public func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = player
+        view.controlsStyle = .none
+        return view
+    }
+
+    public func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+#endif
 
 public struct VideoPlayerContainerView: View {
     @Environment(\.dismiss) private var dismiss

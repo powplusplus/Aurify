@@ -22,5 +22,6 @@ jobs:
       - name: Show Xcode Version
         run: xcodebuild -version
 
-      - name: Build Swift Package
-        run: swift build -v -c release
+      - name: Build iOS Target
+        run: |
+          swift build -v -c release -Xswiftc "-sdk" -Xswiftc "$(xcrun --sdk iphonesimulator --show-sdk-path)" -Xswiftc "-target" -Xswiftc "arm64-apple-ios17.0-simulator"

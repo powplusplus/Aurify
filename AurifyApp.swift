@@ -6,12 +6,13 @@ public struct AurifyApp: App {
     @StateObject private var historyManager = WatchHistoryManager.shared
 
     public init() {
-        // Set transparent navigation bar & tab bar appearance for iOS 27 aesthetics
+        #if canImport(UIKit)
         let appearance = UITabBarAppearance()
         appearance.configureWithTransparentBackground()
         appearance.backgroundColor = UIColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 0.85)
         UITabBar.appearance().standardAppearance = appearance
         UITabBar.appearance().scrollEdgeAppearance = appearance
+        #endif
     }
 
     public var body: some Scene {

@@ -113,7 +113,9 @@ public struct HomeView: View {
                     }
                 }
             }
+            #if os(iOS)
             .navigationBarHidden(true)
+            #endif
             .sheet(item: $selectedMediaForDetail) { item in
                 MediaDetailView(mediaItem: item)
             }
@@ -123,7 +125,9 @@ public struct HomeView: View {
                 }
             }
         }
+        #if os(iOS)
         .navigationViewStyle(StackNavigationViewStyle())
+        #endif
     }
 
     private func heroBannerView(_ item: MediaItem) -> some View {

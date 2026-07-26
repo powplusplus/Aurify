@@ -177,7 +177,9 @@ public struct SettingsView: View {
                     }
                 }
             }
+            #if os(iOS)
             .navigationBarHidden(true)
+            #endif
             .alert("Clear Watch History", isPresented: $showClearHistoryAlert) {
                 Button("Cancel", role: .cancel) {}
                 Button("Clear All", role: .destructive) {
@@ -187,6 +189,8 @@ public struct SettingsView: View {
                 Text("Are you sure you want to remove all saved playback progress?")
             }
         }
+        #if os(iOS)
         .navigationViewStyle(StackNavigationViewStyle())
+        #endif
     }
 }

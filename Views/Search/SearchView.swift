@@ -95,7 +95,9 @@ public struct SearchView: View {
                     }
                 }
             }
+            #if os(iOS)
             .navigationBarHidden(true)
+            #endif
             .sheet(item: $selectedMediaForDetail) { item in
                 MediaDetailView(mediaItem: item)
             }
@@ -103,6 +105,8 @@ public struct SearchView: View {
                 await viewModel.loadGenres()
             }
         }
+        #if os(iOS)
         .navigationViewStyle(StackNavigationViewStyle())
+        #endif
     }
 }
