@@ -101,6 +101,27 @@ public struct MediaItem: Identifiable, Codable, Hashable {
         self.tagline = try? container.decode(String.self, forKey: .tagline)
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(originalTitle, forKey: .originalTitle)
+        try container.encode(overview, forKey: .overview)
+        try container.encodeIfPresent(posterPath, forKey: .posterPath)
+        try container.encodeIfPresent(backdropPath, forKey: .backdropPath)
+        try container.encode(mediaType, forKey: .mediaType)
+        try container.encode(voteAverage, forKey: .voteAverage)
+        try container.encode(voteCount, forKey: .voteCount)
+        try container.encodeIfPresent(releaseDate, forKey: .releaseDate)
+        try container.encodeIfPresent(firstAirDate, forKey: .firstAirDate)
+        try container.encodeIfPresent(genreIds, forKey: .genreIds)
+        try container.encodeIfPresent(genres, forKey: .genres)
+        try container.encodeIfPresent(numberOfSeasons, forKey: .numberOfSeasons)
+        try container.encodeIfPresent(numberOfEpisodes, forKey: .numberOfEpisodes)
+        try container.encodeIfPresent(runtime, forKey: .runtime)
+        try container.encodeIfPresent(tagline, forKey: .tagline)
+    }
+
     public init(
         id: Int,
         title: String,
