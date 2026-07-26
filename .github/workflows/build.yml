@@ -22,6 +22,6 @@ jobs:
       - name: Show Xcode Version
         run: xcodebuild -version
 
-      - name: Build iOS Target
+      - name: Build iOS App with xcodebuild
         run: |
-          swift build -v -c release -Xswiftc "-sdk" -Xswiftc "$(xcrun --sdk iphonesimulator --show-sdk-path)" -Xswiftc "-target" -Xswiftc "arm64-apple-ios17.0-simulator"
+          xcodebuild -scheme Aurify -sdk iphonesimulator -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO
