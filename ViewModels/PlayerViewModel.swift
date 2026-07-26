@@ -68,8 +68,10 @@ public class PlayerViewModel: ObservableObject {
     }
 
     deinit {
-        if let token = timeObserverToken {
-            player?.removeTimeObserver(token)
+        MainActor.assumeIsolated {
+            if let token = timeObserverToken {
+                player?.removeTimeObserver(token)
+            }
         }
     }
 
