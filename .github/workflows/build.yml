@@ -1,4 +1,4 @@
-name: Build Aurify iOS App
+name: Build Aurify iOS App & Generate IPA
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build Swift App
+    name: Build & Package IPA
     runs-on: macos-14
 
     steps:
@@ -24,4 +24,29 @@ jobs:
 
       - name: Build iOS App with xcodebuild
         run: |
-          xcodebuild -scheme Aurify -sdk iphonesimulator -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO
+          xcodebuild -scheme Aurify \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath ./build
+
+      - name: Package into IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find ./build/Build/Products -name "*.app" -o -name "Aurify" | head -n 1)
+          echo "Found app path: $APP_PATH"
+          if [ -d "$APP_PATH" ]; then
+            cp -r "$APP_PATH" Payload/
+          else
+            mkdir -p Payload/Aurify.app
+            cp -r $APP_PATH Payload/Aurify.app/
+          fi
+          zip -r Aurify.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aurify-iOS-v1.0.0.ipa
+          path: Aurify.ipa
