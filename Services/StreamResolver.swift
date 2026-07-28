@@ -54,20 +54,23 @@ private struct VidLinkStream: Decodable {
 private struct VidLinkQuality: Decodable {
     let type: String?
     let url: String
+    let headers: [String: String]?
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let value = try? container.decode(String.self) {
             type = nil
             url = value
+            headers = nil
             return
         }
         let object = try decoder.container(keyedBy: CodingKeys.self)
         type = try object.decodeIfPresent(String.self, forKey: .type)
         url = try object.decode(String.self, forKey: .url)
+        headers = try object.decodeIfPresent([String: String].self, forKey: .headers)
     }
 
-    private enum CodingKeys: String, CodingKey { case type, url }
+    private enum CodingKeys: String, CodingKey { case type, url, headers }
 }
 
 private struct VidLinkCaption: Decodable {
@@ -202,13 +205,16 @@ public actor StreamResolver {
             guard let sourceURL = URL(string: quality.url) else { continue }
             let mappedQuality = StreamQuality.from(providerValue: label)
             let isHLS = quality.type?.lowercased() == "hls" || sourceURL.pathExtension.lowercased() == "m3u8"
+            let sourceHeaders = headers.merging(quality.headers ?? [:]) { _, qualityValue in
+                qualityValue
+            }
             sources.append(StreamSource(
                 url: sourceURL,
                 quality: mappedQuality,
                 isHLS: isHLS,
                 provider: .vidLink,
                 name: label.uppercased(),
-                headers: headers
+                headers: sourceHeaders
             ))
         }
 

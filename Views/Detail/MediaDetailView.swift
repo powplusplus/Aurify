@@ -39,7 +39,11 @@ public struct MediaDetailView: View {
 
     private var hero: some View {
         ZStack(alignment: .top) {
-            AsyncImageBackdrop(url: viewModel.mediaItem.fullBackdropURL ?? viewModel.mediaItem.fullPosterURL, height: 390)
+            AsyncImageBackdrop(
+                url: viewModel.mediaItem.fullBackdropURL ?? viewModel.mediaItem.fullPosterURL,
+                height: 390,
+                contentMode: .fit
+            )
             HStack {
                 circleButton("xmark") { dismiss() }
                 Spacer()
