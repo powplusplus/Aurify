@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 public struct AurifyApp: App {
+    public init() {}
+
     @StateObject private var settings = UserSettings.shared
     @StateObject private var historyManager = WatchHistoryManager.shared
     @StateObject private var watchlistManager = WatchlistManager.shared

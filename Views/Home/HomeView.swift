@@ -84,7 +84,7 @@ public struct HomeView: View {
                 LinearGradient(colors: [.clear, .black.opacity(0.88)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("SPOTLIGHT")
-                        .font(.caption2.black())
+                        .font(.caption2.weight(.black))
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(Color.aurifyAccent, in: Capsule())
