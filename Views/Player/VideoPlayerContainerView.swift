@@ -16,6 +16,8 @@ public struct AVPlayerViewControllerRepresentable: UIViewControllerRepresentable
         let controller = AVPlayerViewController()
         controller.player = player
         controller.showsPlaybackControls = false
+        controller.allowsPictureInPicturePlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.videoGravity = .resizeAspect
         return controller
     }
@@ -50,13 +52,18 @@ public struct AVPlayerViewControllerRepresentable: NSViewRepresentable {
 public struct VideoPlayerContainerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel: PlayerViewModel
+    @ObservedObject private var settings = UserSettings.shared
+    private let onPlaybackFinished: (() -> Void)?
+    @State private var handledCompletion = false
 
     public init(
         mediaItem: MediaItem,
         stream: ResolvedMediaStream,
         seasonNumber: Int? = nil,
-        episodeNumber: Int? = nil
+        episodeNumber: Int? = nil,
+        onPlaybackFinished: (() -> Void)? = nil
     ) {
+        self.onPlaybackFinished = onPlaybackFinished
         _viewModel = StateObject(wrappedValue: PlayerViewModel(
             mediaItem: mediaItem,
             stream: stream,
@@ -79,8 +86,8 @@ public struct VideoPlayerContainerView: View {
             // Subtitle Text Overlay
             SubtitleOverlayView(
                 text: viewModel.activeSubtitleCue,
-                fontSize: CGFloat(UserSettings.shared.subtitleFontSize),
-                backgroundOpacity: UserSettings.shared.subtitleBgOpacity
+                fontSize: CGFloat(settings.subtitleFontSize),
+                backgroundOpacity: settings.subtitleBgOpacity
             )
 
             // Gesture Alert Message Popup (e.g. +10s / -10s)
@@ -102,11 +109,51 @@ public struct VideoPlayerContainerView: View {
                 }
                 .transition(.opacity)
             }
+
+            if viewModel.isBuffering && viewModel.errorMessage == nil {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                    .padding(22)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .allowsHitTesting(false)
+            }
+
+            if let error = viewModel.errorMessage {
+                VStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.title)
+                        .foregroundStyle(.yellow)
+                    Text(error)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                    HStack {
+                        Button("Close") { dismiss() }
+                        Button("Retry") { viewModel.retry() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: 420)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .padding()
+            }
         }
         .statusBar(hidden: true)
+        .persistentSystemOverlays(.hidden)
+        .onAppear {
+            #if canImport(UIKit)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            #endif
+        }
         .onDisappear {
-            viewModel.saveCurrentProgress()
-            viewModel.player?.pause()
+            viewModel.cleanup()
+        }
+        .onChange(of: viewModel.isFinished) { _, finished in
+            guard finished, !handledCompletion else { return }
+            handledCompletion = true
+            if settings.autoPlayNextEpisode { onPlaybackFinished?() }
         }
     }
 }

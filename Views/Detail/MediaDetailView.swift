@@ -3,9 +3,11 @@ import SwiftUI
 public struct MediaDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel: DetailViewModel
-    @State private var activeStreamForPlayer: ResolvedMediaStream? = nil
-    @State private var isPlayerPresented: Bool = false
-    @State private var selectedProvider: ServerProvider = UserSettings.shared.primaryProvider
+    @ObservedObject private var watchlist = WatchlistManager.shared
+    @ObservedObject private var history = WatchHistoryManager.shared
+    @State private var streamForPlayer: ResolvedMediaStream?
+    @State private var showPlayer = false
+    @State private var selectedProvider = UserSettings.shared.primaryProvider
 
     public init(mediaItem: MediaItem) {
         _viewModel = StateObject(wrappedValue: DetailViewModel(mediaItem: mediaItem))
@@ -13,171 +15,169 @@ public struct MediaDetailView: View {
 
     public var body: some View {
         ZStack {
-            Color(red: 0.05, green: 0.05, blue: 0.07)
-                .ignoresSafeArea()
-
-            ScrollView(.vertical, showsIndicators: false) {
+            Color.aurifyBackground.ignoresSafeArea()
+            ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    
-                    // Header Backdrop Image & Close Button
-                    ZStack(alignment: .topLeading) {
-                        AsyncImageBackdrop(url: viewModel.mediaItem.fullBackdropURL ?? viewModel.mediaItem.fullPosterURL, height: 380)
-
-                        // Close Modal Button
-                        Button(action: { dismiss() }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(12)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
-                        }
-                        .padding(.leading, 20)
-                        .padding(.top, 20)
-                    }
-
-                    // Content Container
-                    VStack(alignment: .leading, spacing: 20) {
-                        
-                        // Title & Tags
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(viewModel.mediaItem.title)
-                                .font(.system(size: 28, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
-
-                            HStack(spacing: 10) {
-                                Text(viewModel.mediaItem.displayDate)
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                                    .foregroundColor(.white.opacity(0.6))
-
-                                Text("•")
-                                    .foregroundColor(.white.opacity(0.4))
-
-                                HStack(spacing: 4) {
-                                    Image(systemName: "star.fill")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.yellow)
-                                    Text(String(format: "%.1f", viewModel.mediaItem.voteAverage))
-                                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
-                                }
-
-                                Text("•")
-                                    .foregroundColor(.white.opacity(0.4))
-
-                                Text(viewModel.mediaItem.mediaType.displayName.uppercased())
-                                    .font(.system(size: 10, weight: .black, design: .rounded))
-                                    .foregroundColor(.cyan)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(Color.cyan.opacity(0.15))
-                                    .clipShape(Capsule())
-                            }
-                        }
-
-                        // Play Stream CTA Button
-                        Button(action: {
-                            Task {
-                                if let stream = await viewModel.prepareStreamForPlayback(provider: selectedProvider) {
-                                    self.activeStreamForPlayer = stream
-                                    self.isPlayerPresented = true
-                                }
-                            }
-                        }) {
-                            HStack(spacing: 10) {
-                                if viewModel.isResolvingStream {
-                                    ProgressView()
-                                        .tint(.black)
-                                } else {
-                                    Image(systemName: "play.fill")
-                                        .font(.system(size: 18))
-                                    Text("Start Streaming")
-                                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                                }
-                            }
-                            .foregroundColor(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(
-                                LinearGradient(colors: [Color.white, Color(white: 0.9)], startPoint: .top, endPoint: .bottom)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .shadow(color: Color.white.opacity(0.3), radius: 12, x: 0, y: 6)
-                        }
-                        .disabled(viewModel.isResolvingStream)
-
-                        // Provider Choice Switcher
-                        HStack {
-                            Text("Server Provider")
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundColor(.white.opacity(0.6))
-                            Spacer()
-                            Picker("Provider", selection: $selectedProvider) {
-                                ForEach(ServerProvider.allCases) { prov in
-                                    Text(prov.rawValue).tag(prov)
-                                }
-                            }
-                            .pickerStyle(MenuPickerStyle())
-                            .tint(.cyan)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.1), lineWidth: 1))
-
-                        // TV Show Episode Selector
-                        if viewModel.mediaItem.mediaType == .tv, let totalS = viewModel.detailedItem?.numberOfSeasons ?? viewModel.mediaItem.numberOfSeasons {
-                            SeasonEpisodeSelector(
-                                totalSeasons: totalS,
-                                selectedSeasonNumber: $viewModel.selectedSeasonNumber,
-                                episodes: viewModel.currentSeasonEpisodes,
-                                selectedEpisode: $viewModel.selectedEpisode
-                            ) { newSeason in
-                                Task {
-                                    await viewModel.loadSeason(number: newSeason)
-                                }
-                            }
-                        }
-
-                        // Synopsis / Overview
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Storyline")
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-
-                            Text(viewModel.mediaItem.overview.isEmpty ? "No detailed synopsis available for this title." : viewModel.mediaItem.overview)
-                                .font(.system(size: 14, weight: .regular, design: .rounded))
-                                .foregroundColor(.white.opacity(0.8))
-                                .lineSpacing(5)
-                        }
-
-                        if let error = viewModel.errorMessage {
-                            Text(error)
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundColor(.red)
-                                .padding()
-                                .background(Color.red.opacity(0.15))
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                    .padding(20)
+                    hero
+                    details
                 }
             }
         }
-        .task {
-            await viewModel.loadDetails()
-        }
-        .fullScreenCover(isPresented: $isPlayerPresented) {
-            if let stream = activeStreamForPlayer {
+        .task { await viewModel.loadDetails() }
+        .fullScreenCover(isPresented: $showPlayer) {
+            if let streamForPlayer {
                 VideoPlayerContainerView(
                     mediaItem: viewModel.mediaItem,
-                    stream: stream,
+                    stream: streamForPlayer,
                     seasonNumber: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedSeasonNumber : nil,
-                    episodeNumber: viewModel.mediaItem.mediaType == .tv ? (viewModel.selectedEpisode?.episodeNumber ?? 1) : nil
+                    episodeNumber: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedEpisode?.episodeNumber : nil,
+                    onPlaybackFinished: viewModel.mediaItem.mediaType == .tv ? { Task { await playNextEpisode() } } : nil
                 )
             }
         }
     }
+
+    private var hero: some View {
+        ZStack(alignment: .top) {
+            AsyncImageBackdrop(url: viewModel.mediaItem.fullBackdropURL ?? viewModel.mediaItem.fullPosterURL, height: 390)
+            HStack {
+                circleButton("xmark") { dismiss() }
+                Spacer()
+                circleButton(watchlist.contains(viewModel.mediaItem) ? "bookmark.fill" : "bookmark") {
+                    watchlist.toggle(viewModel.mediaItem)
+                }
+                .accessibilityLabel(watchlist.contains(viewModel.mediaItem) ? "Remove from Watchlist" : "Add to Watchlist")
+            }
+            .padding(20)
+        }
+        .frame(height: 390)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(viewModel.detailedItem?.title ?? viewModel.mediaItem.title)
+                    .font(.largeTitle.bold())
+                HStack(spacing: 10) {
+                    Text(viewModel.mediaItem.displayDate)
+                    Label(String(format: "%.1f", viewModel.mediaItem.voteAverage), systemImage: "star.fill")
+                        .symbolRenderingMode(.multicolor)
+                    Text(viewModel.mediaItem.mediaType == .movie ? "Movie" : "Series")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                if let tagline = viewModel.detailedItem?.tagline, !tagline.isEmpty {
+                    Text(tagline).font(.headline).foregroundStyle(.secondary)
+                }
+            }
+
+            Button { Task { await play() } } label: {
+                HStack {
+                    if viewModel.isResolvingStream { ProgressView().tint(.black) }
+                    else { Image(systemName: resumeProgress == nil ? "play.fill" : "play.fill") }
+                    Text(resumeProgress == nil ? "Play" : "Resume")
+                    if let resumeProgress { Text("· \(Int(resumeProgress.progressFraction * 100))%").foregroundStyle(.secondary) }
+                }
+                .font(.headline)
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .disabled(viewModel.isResolvingStream || (viewModel.mediaItem.mediaType == .tv && viewModel.selectedEpisode == nil))
+
+            GlassCard(cornerRadius: 18, padding: 12) {
+                HStack {
+                    Label("Source", systemImage: selectedProvider.iconName)
+                    Spacer()
+                    Picker("Source", selection: $selectedProvider) {
+                        ForEach(ServerProvider.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                }
+            }
+
+            if viewModel.mediaItem.mediaType == .tv,
+               let count = viewModel.detailedItem?.numberOfSeasons ?? viewModel.mediaItem.numberOfSeasons {
+                SeasonEpisodeSelector(
+                    totalSeasons: count,
+                    selectedSeasonNumber: $viewModel.selectedSeasonNumber,
+                    episodes: viewModel.currentSeasonEpisodes,
+                    selectedEpisode: $viewModel.selectedEpisode
+                ) { season in
+                    Task { await viewModel.loadSeason(number: season) }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Storyline").font(.title3.bold())
+                Text(viewModel.detailedItem?.overview.nonEmpty ?? viewModel.mediaItem.overview.nonEmpty ?? "No synopsis is available for this title.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+            }
+
+            if let error = viewModel.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 40)
+    }
+
+    private var resumeProgress: WatchProgress? {
+        history.getProgress(
+            mediaId: viewModel.mediaItem.id,
+            mediaType: viewModel.mediaItem.mediaType,
+            season: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedSeasonNumber : nil,
+            episode: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedEpisode?.episodeNumber : nil
+        )
+    }
+
+    private func play() async {
+        if let stream = await viewModel.prepareStreamForPlayback(provider: selectedProvider) {
+            streamForPlayer = stream
+            showPlayer = true
+        }
+    }
+
+    private func playNextEpisode() async {
+        guard viewModel.mediaItem.mediaType == .tv, let current = viewModel.selectedEpisode else { return }
+        if let index = viewModel.currentSeasonEpisodes.firstIndex(where: { $0.id == current.id }),
+           viewModel.currentSeasonEpisodes.indices.contains(index + 1) {
+            viewModel.selectedEpisode = viewModel.currentSeasonEpisodes[index + 1]
+        } else {
+            let total = viewModel.detailedItem?.numberOfSeasons ?? viewModel.mediaItem.numberOfSeasons ?? viewModel.selectedSeasonNumber
+            guard viewModel.selectedSeasonNumber < total else { return }
+            await viewModel.loadSeason(number: viewModel.selectedSeasonNumber + 1)
+            guard viewModel.selectedEpisode != nil else { return }
+        }
+
+        showPlayer = false
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        if let stream = await viewModel.prepareStreamForPlayback(provider: selectedProvider) {
+            streamForPlayer = stream
+            showPlayer = true
+        }
+    }
+
+    private func circleButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

@@ -31,7 +31,7 @@ public class DetailViewModel: ObservableObject {
                 await loadSeason(number: 1)
             }
         } catch {
-            self.errorMessage = "Could not fetch full media details."
+            self.errorMessage = error.localizedDescription
         }
         
         isLoading = false
@@ -42,11 +42,9 @@ public class DetailViewModel: ObservableObject {
         do {
             let season = try await TMDBService.shared.fetchSeasonDetail(tvId: mediaItem.id, seasonNumber: number)
             self.currentSeasonEpisodes = season.episodes
-            if selectedEpisode == nil {
-                self.selectedEpisode = season.episodes.first
-            }
+            self.selectedEpisode = season.episodes.first
         } catch {
-            print("Failed to fetch season \(number): \(error.localizedDescription)")
+            self.errorMessage = error.localizedDescription
         }
     }
 
@@ -69,7 +67,7 @@ public class DetailViewModel: ObservableObject {
             self.isResolvingStream = false
             return stream
         } catch {
-            self.errorMessage = "Failed to resolve video stream from provider \(provider.rawValue)."
+            self.errorMessage = error.localizedDescription
             self.isResolvingStream = false
             return nil
         }

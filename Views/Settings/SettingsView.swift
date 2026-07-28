@@ -2,195 +2,125 @@ import SwiftUI
 
 public struct SettingsView: View {
     @ObservedObject private var settings = UserSettings.shared
-    @ObservedObject private var historyManager = WatchHistoryManager.shared
-    @State private var showClearHistoryAlert: Bool = false
+    @ObservedObject private var history = WatchHistoryManager.shared
+    @ObservedObject private var watchlist = WatchlistManager.shared
+    @State private var confirmation: Confirmation?
+    @State private var showConfirmation = false
+
+    private enum Confirmation: String, Identifiable {
+        case history, watchlist
+        var id: String { rawValue }
+    }
 
     public init() {}
 
     public var body: some View {
-        NavigationView {
-            ZStack {
-                Color(red: 0.05, green: 0.05, blue: 0.07)
-                    .ignoresSafeArea()
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("TMDB Read Access Token", text: $settings.customTMDBKey)
+                        .textContentType(.password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Link("Create a free TMDB token", destination: URL(string: "https://www.themoviedb.org/settings/api")!)
+                } header: {
+                    Text("Catalog")
+                } footer: {
+                    Text("Aurify first reads Z-Stream's public runtime configuration. Your own TMDB token is the reliable fallback and is stored in this device's Keychain.")
+                }
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 24) {
-                        
-                        // Header
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Settings")
-                                .font(.system(size: 28, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
-                            Text("Playback, Provider & Subtitle Preferences")
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundColor(.white.opacity(0.5))
+                Section("Streaming") {
+                    Picker("Provider", selection: $settings.primaryProvider) {
+                        ForEach(ServerProvider.allCases) { provider in
+                            Label(provider.rawValue, systemImage: provider.iconName).tag(provider)
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 10)
-
-                        // Streaming Provider Section
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 16) {
-                                Label("Stream Resolver Provider", systemImage: "server.rack")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundColor(.cyan)
-
-                                Picker("Primary Provider", selection: $settings.primaryProvider) {
-                                    ForEach(ServerProvider.allCases) { prov in
-                                        Text(prov.rawValue).tag(prov)
-                                    }
-                                }
-                                .pickerStyle(SegmentedPickerStyle())
-
-                                Text("ZStream Primary targets zstream.mov native embed extraction with automatic fallback to high-speed stream sources.")
-                                    .font(.system(size: 12, weight: .regular, design: .rounded))
-                                    .foregroundColor(.white.opacity(0.6))
-                            }
+                    }
+                    if settings.primaryProvider == .custom {
+                        TextField("https://your-resolver.example/resolve", text: $settings.customResolverURL)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    Picker("Preferred quality", selection: $settings.defaultQuality) {
+                        ForEach(StreamQuality.allCases) { quality in
+                            Text(quality.rawValue).tag(quality)
                         }
-                        .padding(.horizontal, 20)
-
-                        // Subtitle Preferences Section
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 16) {
-                                Label("Subtitle Styling & Default", systemImage: "captions.bubble.fill")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundColor(.cyan)
-
-                                HStack {
-                                    Text("Default Language")
-                                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                                        .foregroundColor(.white)
-                                    Spacer()
-                                    Picker("Language", selection: $settings.preferredSubtitleLanguage) {
-                                        Text("English").tag("en")
-                                        Text("Spanish").tag("es")
-                                        Text("French").tag("fr")
-                                        Text("German").tag("de")
-                                        Text("Japanese").tag("ja")
-                                    }
-                                    .pickerStyle(MenuPickerStyle())
-                                    .tint(.cyan)
-                                }
-
-                                Divider().background(Color.white.opacity(0.1))
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("Font Size")
-                                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                                            .foregroundColor(.white)
-                                        Spacer()
-                                        Text("\(Int(settings.subtitleFontSize)) pt")
-                                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.cyan)
-                                    }
-                                    Slider(value: $settings.subtitleFontSize, in: 14...28, step: 1)
-                                        .tint(.cyan)
-                                }
-
-                                Divider().background(Color.white.opacity(0.1))
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("Background Opacity")
-                                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                                            .foregroundColor(.white)
-                                        Spacer()
-                                        Text("\(Int(settings.subtitleBgOpacity * 100))%")
-                                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.cyan)
-                                    }
-                                    Slider(value: $settings.subtitleBgOpacity, in: 0.2...1.0, step: 0.05)
-                                        .tint(.cyan)
-                                }
-                            }
+                    }
+                    Picker("Default speed", selection: $settings.playbackSpeed) {
+                        ForEach([0.5, 0.75, 1, 1.25, 1.5, 2], id: \.self) { speed in
+                            Text(String(format: "%gx", speed)).tag(speed)
                         }
-                        .padding(.horizontal, 20)
+                    }
+                    Toggle("Autoplay next episode", isOn: $settings.autoPlayNextEpisode)
+                    Toggle("Allow cellular streaming", isOn: $settings.allowsCellularStreaming)
+                }
 
-                        // Data & Watch History Section
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 16) {
-                                Label("Watch History & Progress", systemImage: "clock.arrow.circlepath")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundColor(.cyan)
-
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Stored History Entries")
-                                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                                            .foregroundColor(.white)
-                                        Text("\(historyManager.history.count) titles saved")
-                                            .font(.system(size: 12, weight: .regular, design: .rounded))
-                                            .foregroundColor(.white.opacity(0.5))
-                                    }
-
-                                    Spacer()
-
-                                    Button(action: { showClearHistoryAlert = true }) {
-                                        Text("Clear History")
-                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                            .foregroundColor(.red)
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
-                                            .background(Color.red.opacity(0.15))
-                                            .clipShape(Capsule())
-                                    }
-                                }
-                            }
+                Section("Subtitles") {
+                    Toggle("Enable by default", isOn: $settings.subtitlesEnabled)
+                    Picker("Preferred language", selection: $settings.preferredSubtitleLanguage) {
+                        ForEach(subtitleLanguages, id: \.code) { language in
+                            Text(language.name).tag(language.code)
                         }
-                        .padding(.horizontal, 20)
+                    }
+                    LabeledContent("Text size", value: "\(Int(settings.subtitleFontSize)) pt")
+                    Slider(value: $settings.subtitleFontSize, in: 14...34, step: 1)
+                    LabeledContent("Background", value: "\(Int(settings.subtitleBgOpacity * 100))%")
+                    Slider(value: $settings.subtitleBgOpacity, in: 0...1, step: 0.05)
+                }
 
-                        // TMDB Custom API Key Section
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Label("TMDB Integration", systemImage: "key.fill")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundColor(.cyan)
+                Section("Discovery") {
+                    Picker("Metadata language", selection: $settings.metadataLanguage) {
+                        Text("English (US)").tag("en-US")
+                        Text("English (UK)").tag("en-GB")
+                        Text("Español").tag("es-ES")
+                        Text("Français").tag("fr-FR")
+                        Text("Deutsch").tag("de-DE")
+                        Text("日本語").tag("ja-JP")
+                    }
+                    Toggle("Include adult titles", isOn: $settings.includeAdultContent)
+                }
 
-                                Text("Custom TMDB API Key (Optional)")
-                                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                                    .foregroundColor(.white.opacity(0.8))
-
-                                TextField("Leave blank to use built-in fallback key", text: $settings.customTMDBKey)
-                                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                                    .foregroundColor(.white)
-                                    .padding(12)
-                                    .background(Color.black.opacity(0.4))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            }
-                        }
-                        .padding(.horizontal, 20)
-
-                        // About App
-                        VStack(spacing: 6) {
-                            Text("Aurify • iOS 27 Design Language")
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundColor(.white.opacity(0.6))
-                            Text("Version 1.0.0 (Build 2026.1) • Swift & AVPlayer")
-                                .font(.system(size: 11, weight: .regular, design: .rounded))
-                                .foregroundColor(.white.opacity(0.4))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 10)
-                        .padding(.bottom, 30)
+                Section("Local data") {
+                    LabeledContent("Watch history", value: "\(history.history.count) entries")
+                    Button("Clear watch history", role: .destructive) {
+                        confirmation = .history
+                        showConfirmation = true
+                    }
+                    LabeledContent("Watchlist", value: "\(watchlist.items.count) titles")
+                    Button("Clear watchlist", role: .destructive) {
+                        confirmation = .watchlist
+                        showConfirmation = true
                     }
                 }
-            }
-            #if os(iOS)
-            .navigationBarHidden(true)
-            #endif
-            .alert("Clear Watch History", isPresented: $showClearHistoryAlert) {
-                Button("Cancel", role: .cancel) {}
-                Button("Clear All", role: .destructive) {
-                    historyManager.clearAllHistory()
+
+                Section("About") {
+                    LabeledContent("Aurify", value: "1.1 (2027)")
+                    LabeledContent("Playback", value: "AVFoundation")
+                    Link("Open Z-Stream", destination: URL(string: "https://zstream.mov/")!)
+                    Link("Z-Stream source", destination: URL(string: "https://github.com/xp-technologies-dev/p-stream")!)
+                    Text("Aurify does not host media. Provider availability and your right to view a title depend on your region and the third-party source.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-            } message: {
-                Text("Are you sure you want to remove all saved playback progress?")
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.aurifyBackground)
+            .navigationTitle("Settings")
+            .confirmationDialog("Clear local data?", isPresented: $showConfirmation, presenting: confirmation) { target in
+                Button("Clear", role: .destructive) {
+                    if target == .history { history.clearAllHistory() }
+                    else { watchlist.clear() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { target in
+                Text(target == .history ? "All playback progress will be removed." : "All saved titles will be removed.")
             }
         }
-        #if os(iOS)
-        .navigationViewStyle(StackNavigationViewStyle())
-        #endif
     }
+
+    private let subtitleLanguages: [(code: String, name: String)] = [
+        ("en", "English"), ("es", "Spanish"), ("fr", "French"), ("de", "German"),
+        ("it", "Italian"), ("pt", "Portuguese"), ("ja", "Japanese"), ("ko", "Korean"),
+        ("zh", "Chinese"), ("ar", "Arabic"), ("hi", "Hindi"), ("ru", "Russian")
+    ]
 }

@@ -1,8 +1,8 @@
 import Foundation
 import Combine
 
-public struct WatchProgress: Identifiable, Codable {
-    public var id: String { "\(mediaItem.id)_\(seasonNumber ?? 0)_\(episodeNumber ?? 0)" }
+public struct WatchProgress: Identifiable, Codable, Hashable {
+    public var id: String { "\(mediaItem.mediaType.rawValue)_\(mediaItem.id)_\(seasonNumber ?? 0)_\(episodeNumber ?? 0)" }
     public let mediaItem: MediaItem
     public var currentTime: TimeInterval
     public var duration: TimeInterval
@@ -11,14 +11,17 @@ public struct WatchProgress: Identifiable, Codable {
     public var lastWatchedDate: Date
 
     public var progressFraction: Double {
-        guard duration > 0 else { return 0.0 }
-        return min(max(currentTime / duration, 0.0), 1.0)
+        guard duration.isFinite, duration > 0 else { return 0 }
+        return min(max(currentTime / duration, 0), 1)
     }
+
+    public var isCompleted: Bool { progressFraction >= 0.95 }
+    public var isContinueWatching: Bool { progressFraction >= 0.01 && progressFraction < 0.95 }
 
     public var formattedTimeRemaining: String {
         let remaining = max(duration - currentTime, 0)
-        let mins = Int(remaining) / 60
-        return "\(mins)m left"
+        let minutes = Int(remaining) / 60
+        return minutes > 0 ? "\(minutes)m left" : "Almost finished"
     }
 
     public init(
@@ -38,21 +41,27 @@ public struct WatchProgress: Identifiable, Codable {
     }
 }
 
-public class WatchHistoryManager: ObservableObject {
+@MainActor
+public final class WatchHistoryManager: ObservableObject {
     public static let shared = WatchHistoryManager()
-    
-    private let storageKey = "aurify_watch_history_v1"
+
+    private let storageKey = "aurify_watch_history_v2"
+    private let legacyStorageKey = "aurify_watch_history_v1"
     @Published public private(set) var history: [WatchProgress] = []
 
-    private init() {
-        loadHistory()
+    private init() { loadHistory() }
+
+    public var continueWatching: [WatchProgress] {
+        history.filter(\.isContinueWatching)
     }
 
-    public func getProgress(mediaId: Int, season: Int? = nil, episode: Int? = nil) -> WatchProgress? {
-        if let season = season, let episode = episode {
-            return history.first { $0.mediaItem.id == mediaId && $0.seasonNumber == season && $0.episodeNumber == episode }
+    public func getProgress(mediaId: Int, mediaType: MediaType? = nil, season: Int? = nil, episode: Int? = nil) -> WatchProgress? {
+        history.first {
+            $0.mediaItem.id == mediaId &&
+            (mediaType == nil || $0.mediaItem.mediaType == mediaType) &&
+            $0.seasonNumber == season &&
+            $0.episodeNumber == episode
         }
-        return history.first { $0.mediaItem.id == mediaId }
     }
 
     public func saveProgress(
@@ -62,28 +71,17 @@ public class WatchHistoryManager: ObservableObject {
         season: Int? = nil,
         episode: Int? = nil
     ) {
-        guard duration > 5.0 else { return } // Avoid saving invalid micro-durations
-        
-        let newProgress = WatchProgress(
+        guard duration.isFinite, currentTime.isFinite, duration > 5, currentTime >= 0 else { return }
+        let entry = WatchProgress(
             mediaItem: mediaItem,
-            currentTime: currentTime,
+            currentTime: min(currentTime, duration),
             duration: duration,
             seasonNumber: season,
-            episodeNumber: episode,
-            lastWatchedDate: Date()
+            episodeNumber: episode
         )
-
-        // Remove existing entry for the same media item/episode
-        history.removeAll { $0.id == newProgress.id }
-        
-        // Insert at the beginning (most recently watched first)
-        history.insert(newProgress, at: 0)
-        
-        // Keep maximum 50 recent items
-        if history.count > 50 {
-            history = Array(history.prefix(50))
-        }
-
+        history.removeAll { $0.id == entry.id }
+        history.insert(entry, at: 0)
+        history = Array(history.prefix(100))
         persistHistory()
     }
 
@@ -98,20 +96,15 @@ public class WatchHistoryManager: ObservableObject {
     }
 
     private func persistHistory() {
-        do {
-            let data = try JSONEncoder().encode(history)
-            UserDefaults.standard.set(data, forKey: storageKey)
-        } catch {
-            print("Failed to save watch history: \(error.localizedDescription)")
-        }
+        guard let data = try? JSONEncoder().encode(history) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
     }
 
     private func loadHistory() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return }
-        do {
-            self.history = try JSONDecoder().decode([WatchProgress].self, from: data)
-        } catch {
-            print("Failed to load watch history: \(error.localizedDescription)")
-        }
+        let defaults = UserDefaults.standard
+        let data = defaults.data(forKey: storageKey) ?? defaults.data(forKey: legacyStorageKey)
+        guard let data, let decoded = try? JSONDecoder().decode([WatchProgress].self, from: data) else { return }
+        history = decoded.sorted { $0.lastWatchedDate > $1.lastWatchedDate }
+        if defaults.data(forKey: storageKey) == nil { persistHistory() }
     }
 }

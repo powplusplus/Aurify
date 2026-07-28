@@ -1,4 +1,4 @@
-name: Build Aurify iOS App & Generate IPA
+name: Build Aurify IPA
 
 on:
   push:
@@ -9,55 +9,49 @@ on:
 
 jobs:
   build:
-    name: Build & Package IPA
-    runs-on: macos-14
+    name: Build unsigned IPA
+    runs-on: macos-26
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-
-      - name: Show Xcode Version
-        run: xcodebuild -version
-
-      - name: Build iOS App with xcodebuild
+      - name: Show toolchain
         run: |
-          xcodebuild -scheme Aurify \
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Aurify.xcodeproj \
+            -scheme Aurify \
+            -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/AurifyDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            -derivedDataPath ./build
+            clean build
 
-      - name: Package into IPA with Info.plist
+      - name: Package IPA
         run: |
-          mkdir -p Payload/Aurify.app
-          
-          # Locate built executable or app bundle
-          TARGET_BIN=$(find ./build/Build/Products -type f -name "Aurify" | head -n 1)
-          echo "Found binary target at: $TARGET_BIN"
-          
-          if [ -f "$TARGET_BIN" ]; then
-            cp "$TARGET_BIN" Payload/Aurify.app/Aurify
-          elif [ -d "./build/Build/Products/Release-iphoneos/Aurify.app" ]; then
-            cp -r ./build/Build/Products/Release-iphoneos/Aurify.app/* Payload/Aurify.app/
-          fi
-          
-          # Embed Info.plist into Payload/Aurify.app/Info.plist
-          cp Info.plist Payload/Aurify.app/Info.plist
-          
-          # Create PkgInfo and ensure execution permissions
-          echo -n "APPL????" > Payload/Aurify.app/PkgInfo
-          chmod +x Payload/Aurify.app/Aurify
-          
-          # Package IPA
-          zip -r Aurify.ipa Payload
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/AurifyDerivedData/Build/Products/Release-iphoneos/Aurify.app"
+          test -d "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/AurifyExport/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/AurifyExport/Payload/Aurify.app"
+          cd "$RUNNER_TEMP/AurifyExport"
+          /usr/bin/zip -qry Aurify-unsigned.ipa Payload
+          test -s Aurify-unsigned.ipa
 
-      - name: Upload IPA Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Aurify-iOS-v1.0.0.ipa
-          path: Aurify.ipa
+          name: Aurify-unsigned-ipa
+          path: ${{ runner.temp }}/AurifyExport/Aurify-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

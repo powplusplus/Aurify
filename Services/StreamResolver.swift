@@ -1,171 +1,354 @@
 import Foundation
 
-public struct ResolvedMediaStream {
+public struct ResolvedMediaStream: Codable, Hashable {
     public let sources: [StreamSource]
     public let subtitles: [SubtitleTrack]
     public let activeProvider: ServerProvider
+
+    public init(sources: [StreamSource], subtitles: [SubtitleTrack], activeProvider: ServerProvider) {
+        self.sources = sources
+        self.subtitles = subtitles
+        self.activeProvider = activeProvider
+    }
+}
+
+public enum StreamResolverError: LocalizedError {
+    case invalidEpisode
+    case providerUnavailable(String)
+    case noPlayableSource
+    case customResolverNotConfigured
+    case invalidCustomResolver
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidEpisode:
+            return "Select a season and episode before playing."
+        case let .providerUnavailable(message):
+            return message
+        case .noPlayableSource:
+            return "Z-Stream's providers did not return a playable source for this title."
+        case .customResolverNotConfigured:
+            return "Add a custom resolver URL in Settings first."
+        case .invalidCustomResolver:
+            return "The custom resolver returned an unsupported response."
+        }
+    }
+}
+
+private struct EncryptionResponse: Decodable { let result: String }
+
+private struct VidLinkResponse: Decodable {
+    let sourceId: String?
+    let stream: VidLinkStream?
+}
+
+private struct VidLinkStream: Decodable {
+    let id: String?
+    let type: String?
+    let qualities: [String: VidLinkQuality]?
+    let playlist: String?
+    let captions: [VidLinkCaption]?
+    let headers: [String: String]?
+}
+
+private struct VidLinkQuality: Decodable {
+    let type: String?
+    let url: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            type = nil
+            url = value
+            return
+        }
+        let object = try decoder.container(keyedBy: CodingKeys.self)
+        type = try object.decodeIfPresent(String.self, forKey: .type)
+        url = try object.decode(String.self, forKey: .url)
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, url }
+}
+
+private struct VidLinkCaption: Decodable {
+    let id: String?
+    let url: String
+    let language: String?
+    let display: String?
+    let type: String?
+    let isHearingImpaired: Bool?
+}
+
+private struct VDRKCaption: Decodable {
+    let file: String
+    let label: String
+}
+
+private struct CustomResolverPayload: Decodable {
+    let sources: [CustomResolverSource]
+    let subtitles: [CustomResolverSubtitle]?
+}
+
+private struct CustomResolverSource: Decodable {
+    let url: String
+    let quality: String?
+    let type: String?
+    let name: String?
+    let headers: [String: String]?
+}
+
+private struct CustomResolverSubtitle: Decodable {
+    let url: String
+    let language: String?
+    let label: String?
+    let format: String?
 }
 
 public actor StreamResolver {
     public static let shared = StreamResolver()
-    
-    private init() {}
+
+    private let session: URLSession
+
+    private init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 22
+        configuration.timeoutIntervalForResource = 40
+        configuration.waitsForConnectivity = true
+        session = URLSession(configuration: configuration)
+    }
 
     public func resolveStream(
         tmdbId: Int,
         mediaType: MediaType,
         season: Int? = nil,
         episode: Int? = nil,
-        preferredProvider: ServerProvider = .zstream
+        preferredProvider: ServerProvider = .zstreamAuto
     ) async throws -> ResolvedMediaStream {
-        
-        var attemptedProviders: [ServerProvider] = []
-        
-        switch preferredProvider {
-        case .zstream:
-            attemptedProviders = [.zstream, .vidsrcPro, .embedSu]
-        case .vidsrcPro:
-            attemptedProviders = [.vidsrcPro, .zstream, .embedSu]
-        case .embedSu:
-            attemptedProviders = [.embedSu, .zstream, .vidsrcPro]
-        case .autoFallback:
-            attemptedProviders = [.zstream, .vidsrcPro, .embedSu]
+        if mediaType == .tv, (season == nil || episode == nil) {
+            throw StreamResolverError.invalidEpisode
         }
-        
-        for provider in attemptedProviders {
+
+        let providers: [ServerProvider]
+        switch preferredProvider {
+        case .zstreamAuto:
+            providers = UserSettings.shared.customResolverURL.isEmpty ? [.vidLink] : [.vidLink, .custom]
+        case .vidLink:
+            providers = [.vidLink]
+        case .custom:
+            providers = [.custom, .vidLink]
+        }
+
+        var failures: [String] = []
+        for provider in providers {
             do {
-                let stream = try await fetchFromProvider(provider, tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
-                if !stream.sources.isEmpty {
-                    return stream
+                var result: ResolvedMediaStream
+                switch provider {
+                case .zstreamAuto:
+                    continue
+                case .vidLink:
+                    result = try await resolveVidLink(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
+                case .custom:
+                    result = try await resolveCustom(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
                 }
+
+                let external = await fetchExternalSubtitles(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
+                let subtitles = deduplicateSubtitles(result.subtitles + external)
+                return ResolvedMediaStream(sources: result.sources, subtitles: subtitles, activeProvider: result.activeProvider)
             } catch {
-                continue
+                failures.append("\(provider.rawValue): \(error.localizedDescription)")
             }
         }
-        
-        // Fallback demo stream if network scraping is blocked by CORS/DRM during testing
-        return generateFallbackStream(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
+
+        if failures.isEmpty { throw StreamResolverError.noPlayableSource }
+        throw StreamResolverError.providerUnavailable(failures.joined(separator: "\n"))
     }
 
-    private func fetchFromProvider(
-        _ provider: ServerProvider,
-        tmdbId: Int,
-        mediaType: MediaType,
-        season: Int?,
-        episode: Int?
-    ) async throws -> ResolvedMediaStream {
-        
-        let targetURLString: String
-        switch provider {
-        case .zstream:
-            if mediaType == .movie {
-                targetURLString = "https://zstream.mov/embed/movie/\(tmdbId)"
-            } else {
-                let s = season ?? 1
-                let e = episode ?? 1
-                targetURLString = "https://zstream.mov/embed/tv/\(tmdbId)/\(s)/\(e)"
-            }
-        case .vidsrcPro:
-            if mediaType == .movie {
-                targetURLString = "https://vidsrc.to/embed/movie/\(tmdbId)"
-            } else {
-                let s = season ?? 1
-                let e = episode ?? 1
-                targetURLString = "https://vidsrc.to/embed/tv/\(tmdbId)/\(s)/\(e)"
-            }
-        case .embedSu:
-            if mediaType == .movie {
-                targetURLString = "https://embed.su/embed/movie/\(tmdbId)"
-            } else {
-                let s = season ?? 1
-                let e = episode ?? 1
-                targetURLString = "https://embed.su/embed/tv/\(tmdbId)/\(s)/\(e)"
-            }
-        case .autoFallback:
-            targetURLString = "https://zstream.mov/embed/movie/\(tmdbId)"
-        }
+    private func resolveVidLink(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async throws -> ResolvedMediaStream {
+        var encryptComponents = URLComponents(string: "https://enc-dec.app/api/enc-vidlink")!
+        encryptComponents.queryItems = [URLQueryItem(name: "text", value: String(tmdbId))]
+        let encryption: EncryptionResponse = try await fetchJSON(EncryptionResponse.self, url: encryptComponents.url!)
 
-        guard let url = URL(string: targetURLString) else {
-            throw URLError(.badURL)
+        let encodedId = encryption.result.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? encryption.result
+        let path: String
+        if mediaType == .movie {
+            path = "movie/\(encodedId)"
+        } else {
+            path = "tv/\(encodedId)/\(season!)/\(episode!)"
         }
+        guard let url = URL(string: "https://vidlink.pro/api/b/\(path)") else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        request.setValue("https://zstream.mov", forHTTPHeaderField: "Referer")
-        request.timeoutInterval = 10.0
+        request.setValue("https://vidlink.pro/", forHTTPHeaderField: "Referer")
+        request.setValue("https://vidlink.pro", forHTTPHeaderField: "Origin")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+        let response: VidLinkResponse = try await fetchJSON(VidLinkResponse.self, request: request)
+        guard let stream = response.stream else { throw StreamResolverError.noPlayableSource }
+        let headers = stream.headers ?? [:]
+        var sources: [StreamSource] = []
+
+        if let playlist = stream.playlist, let playlistURL = URL(string: playlist) {
+            sources.append(StreamSource(
+                url: playlistURL,
+                quality: .auto,
+                isHLS: true,
+                provider: .vidLink,
+                name: "Adaptive",
+                headers: headers
+            ))
+        }
+
+        for (label, quality) in stream.qualities ?? [:] {
+            guard let sourceURL = URL(string: quality.url) else { continue }
+            let mappedQuality = StreamQuality.from(providerValue: label)
+            let isHLS = quality.type?.lowercased() == "hls" || sourceURL.pathExtension.lowercased() == "m3u8"
+            sources.append(StreamSource(
+                url: sourceURL,
+                quality: mappedQuality,
+                isHLS: isHLS,
+                provider: .vidLink,
+                name: label.uppercased(),
+                headers: headers
+            ))
+        }
+
+        guard !sources.isEmpty else { throw StreamResolverError.noPlayableSource }
+        sources = sortSources(sources)
+
+        let captions = (stream.captions ?? []).compactMap { caption -> SubtitleTrack? in
+            guard let url = URL(string: caption.url) else { return nil }
+            let language = normalizedLanguageCode(caption.language ?? caption.display ?? "und")
+            return SubtitleTrack(
+                id: caption.id ?? caption.url,
+                language: language,
+                label: caption.display ?? displayLanguage(language),
+                url: url,
+                format: caption.type?.lowercased() == "srt" ? .subRip : .webVTT,
+                source: "VidLink",
+                isHearingImpaired: caption.isHearingImpaired ?? false
+            )
+        }
+        return ResolvedMediaStream(sources: sources, subtitles: captions, activeProvider: .vidLink)
+    }
+
+    private func resolveCustom(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async throws -> ResolvedMediaStream {
+        let rawBase = UserSettings.shared.customResolverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawBase.isEmpty else { throw StreamResolverError.customResolverNotConfigured }
+        guard var components = URLComponents(string: rawBase) else { throw StreamResolverError.invalidCustomResolver }
+        var items = components.queryItems ?? []
+        items.append(contentsOf: [
+            URLQueryItem(name: "tmdbId", value: String(tmdbId)),
+            URLQueryItem(name: "type", value: mediaType.rawValue)
+        ])
+        if let season { items.append(URLQueryItem(name: "season", value: String(season))) }
+        if let episode { items.append(URLQueryItem(name: "episode", value: String(episode))) }
+        components.queryItems = items
+        guard let url = components.url else { throw StreamResolverError.invalidCustomResolver }
+
+        let payload: CustomResolverPayload = try await fetchJSON(CustomResolverPayload.self, url: url)
+        let sources = payload.sources.compactMap { item -> StreamSource? in
+            guard let url = URL(string: item.url) else { return nil }
+            return StreamSource(
+                url: url,
+                quality: StreamQuality.from(providerValue: item.quality ?? "auto"),
+                isHLS: item.type?.lowercased() == "hls" || url.pathExtension.lowercased() == "m3u8",
+                provider: .custom,
+                name: item.name,
+                headers: item.headers ?? [:]
+            )
+        }
+        guard !sources.isEmpty else { throw StreamResolverError.invalidCustomResolver }
+        let subtitles = (payload.subtitles ?? []).compactMap { item -> SubtitleTrack? in
+            guard let url = URL(string: item.url) else { return nil }
+            let language = normalizedLanguageCode(item.language ?? "und")
+            return SubtitleTrack(
+                language: language,
+                label: item.label ?? displayLanguage(language),
+                url: url,
+                format: item.format?.lowercased() == "srt" ? .subRip : .webVTT,
+                source: "Custom"
+            )
+        }
+        return ResolvedMediaStream(sources: sortSources(sources), subtitles: subtitles, activeProvider: .custom)
+    }
+
+    private func fetchExternalSubtitles(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async -> [SubtitleTrack] {
+        let path = mediaType == .movie
+            ? "movie/\(tmdbId)"
+            : "tv/\(tmdbId)/\(season ?? 1)/\(episode ?? 1)"
+        guard let url = URL(string: "https://sub.vdrk.site/v1/\(path)"),
+              let response = try? await fetchJSON([VDRKCaption].self, url: url) else { return [] }
+        return response.compactMap { item in
+            guard let url = URL(string: item.file) else { return nil }
+            let language = normalizedLanguageCode(item.label)
+            return SubtitleTrack(
+                id: item.file,
+                language: language,
+                label: item.label,
+                url: url,
+                format: url.pathExtension.lowercased() == "srt" ? .subRip : .webVTT,
+                source: "VDRK",
+                isHearingImpaired: item.label.localizedCaseInsensitiveContains(" hi")
+            )
+        }
+    }
+
+    private func fetchJSON<T: Decodable>(_ type: T.Type, url: URL) async throws -> T {
+        try await fetchJSON(type, request: URLRequest(url: url))
+    }
+
+    private func fetchJSON<T: Decodable>(_ type: T.Type, request: URLRequest) async throws -> T {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
-
-        let htmlString = String(data: data, encoding: .utf8) ?? ""
-        
-        let m3u8Links = extractM3U8Links(from: htmlString)
-        let subtitles = extractSubtitles(from: htmlString)
-        
-        if let primaryM3U8 = m3u8Links.first, let masterURL = URL(string: primaryM3U8) {
-            let sources: [StreamSource] = [
-                StreamSource(url: masterURL, quality: .q1080p, isHLS: true, provider: provider),
-                StreamSource(url: masterURL, quality: .auto, isHLS: true, provider: provider)
-            ]
-            return ResolvedMediaStream(sources: sources, subtitles: subtitles, activeProvider: provider)
-        }
-
-        throw URLError(.cannotParseResponse)
+        if data == Data("null".utf8) { throw StreamResolverError.noPlayableSource }
+        return try JSONDecoder().decode(type, from: data)
     }
 
-    private func extractM3U8Links(from html: String) -> [String] {
-        let pattern = "(https?://[^\"]+?\\.m3u8[^\"]*)"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        let matches = regex.matches(in: html, options: [], range: NSRange(location: 0, length: html.utf16.count))
-        
-        var links: [String] = []
-        for match in matches {
-            if let range = Range(match.range(at: 1), in: html) {
-                links.append(String(html[range]))
+    private func sortSources(_ sources: [StreamSource]) -> [StreamSource] {
+        let preferred = UserSettings.shared.defaultQuality
+        return sources.sorted { lhs, rhs in
+            let lhsPreferred = lhs.quality == preferred
+            let rhsPreferred = rhs.quality == preferred
+            if lhsPreferred != rhsPreferred { return lhsPreferred }
+            let lhsAdaptive = lhs.quality == .auto
+            let rhsAdaptive = rhs.quality == .auto
+            if lhsAdaptive != rhsAdaptive { return lhsAdaptive }
+            if lhs.quality == rhs.quality { return lhs.name < rhs.name }
+            return lhs.quality > rhs.quality
+        }
+    }
+
+    private func deduplicateSubtitles(_ subtitles: [SubtitleTrack]) -> [SubtitleTrack] {
+        var seen = Set<String>()
+        return subtitles.filter { seen.insert($0.url.absoluteString).inserted }
+            .sorted { lhs, rhs in
+                let preferred = UserSettings.shared.preferredSubtitleLanguage.lowercased()
+                let lhsPreferred = lhs.language.lowercased() == preferred
+                let rhsPreferred = rhs.language.lowercased() == preferred
+                if lhsPreferred != rhsPreferred { return lhsPreferred }
+                return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
             }
-        }
-        return Array(Set(links))
     }
 
-    private func extractSubtitles(from html: String) -> [SubtitleTrack] {
-        let pattern = "file\\s*:\\s*\"(https?://[^\"]+?\\.(?:vtt|srt)[^\"]*)\"\\s*,\\s*label\\s*:\\s*\"([^\"]+)\""
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        let matches = regex.matches(in: html, options: [], range: NSRange(location: 0, length: html.utf16.count))
-
-        var tracks: [SubtitleTrack] = []
-        for match in matches {
-            if let urlRange = Range(match.range(at: 1), in: html),
-               let labelRange = Range(match.range(at: 2), in: html) {
-                let urlStr = String(html[urlRange])
-                let labelStr = String(html[labelRange])
-                if let url = URL(string: urlStr) {
-                    tracks.append(SubtitleTrack(language: labelStr.lowercased(), label: labelStr, url: url))
-                }
-            }
-        }
-        return tracks
+    private func normalizedLanguageCode(_ value: String) -> String {
+        let cleaned = value
+            .replacingOccurrences(of: #"\s*HI\d*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = cleaned.lowercased()
+        let aliases: [String: String] = [
+            "english": "en", "spanish": "es", "french": "fr", "german": "de",
+            "italian": "it", "portuguese": "pt", "japanese": "ja", "korean": "ko",
+            "chinese": "zh", "arabic": "ar", "hindi": "hi", "dutch": "nl",
+            "polish": "pl", "turkish": "tr", "russian": "ru"
+        ]
+        if let alias = aliases.first(where: { lower.contains($0.key) })?.value { return alias }
+        let prefix = lower.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == " " }).first.map(String.init) ?? lower
+        return prefix.count >= 2 && prefix.count <= 3 ? prefix : "und"
     }
 
-    private func generateFallbackStream(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) -> ResolvedMediaStream {
-        // High quality test stream HLS source (Apple Test HLS & Big Buck Bunny HLS streams)
-        let sampleHLS = URL(string: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8")!
-        let sampleSub = URL(string: "https://raw.githubusercontent.com/w3c/webvtt/gh-pages/spec/example.vtt")!
-        
-        let sources = [
-            StreamSource(url: sampleHLS, quality: .q1080p, isHLS: true, provider: .zstream),
-            StreamSource(url: sampleHLS, quality: .q720p, isHLS: true, provider: .zstream),
-            StreamSource(url: sampleHLS, quality: .auto, isHLS: true, provider: .zstream)
-        ]
-        
-        let subs = [
-            SubtitleTrack(language: "en", label: "English", url: sampleSub),
-            SubtitleTrack(language: "es", label: "Spanish", url: sampleSub),
-            SubtitleTrack(language: "fr", label: "French", url: sampleSub)
-        ]
-        
-        return ResolvedMediaStream(sources: sources, subtitles: subs, activeProvider: .zstream)
+    private func displayLanguage(_ code: String) -> String {
+        Locale.current.localizedString(forLanguageCode: code)?.capitalized ?? code.uppercased()
     }
 }
