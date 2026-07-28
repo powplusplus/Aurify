@@ -2,24 +2,18 @@ import SwiftUI
 
 @main
 public struct AurifyApp: App {
+    public init() {}
+
     @StateObject private var settings = UserSettings.shared
     @StateObject private var historyManager = WatchHistoryManager.shared
-
-    public init() {
-        #if canImport(UIKit)
-        let appearance = UITabBarAppearance()
-        appearance.configureWithTransparentBackground()
-        appearance.backgroundColor = UIColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 0.85)
-        UITabBar.appearance().standardAppearance = appearance
-        UITabBar.appearance().scrollEdgeAppearance = appearance
-        #endif
-    }
+    @StateObject private var watchlistManager = WatchlistManager.shared
 
     public var body: some Scene {
         WindowGroup {
             MainTabView()
                 .environmentObject(settings)
                 .environmentObject(historyManager)
+                .environmentObject(watchlistManager)
                 .preferredColorScheme(.dark)
         }
     }
@@ -44,12 +38,23 @@ public struct MainTabView: View {
                 }
                 .tag(1)
 
+            LibraryView()
+                .tabItem {
+                    Label("Library", systemImage: "rectangle.stack.fill")
+                }
+                .tag(2)
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")
                 }
-                .tag(2)
+                .tag(3)
         }
-        .tint(.cyan)
+        .tint(.aurifyAccent)
     }
+}
+
+public extension Color {
+    static let aurifyBackground = Color(red: 0.035, green: 0.035, blue: 0.055)
+    static let aurifyAccent = Color(red: 0.43, green: 0.42, blue: 1.0)
 }

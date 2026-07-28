@@ -11,6 +11,7 @@ public class SearchViewModel: ObservableObject {
     @Published public var errorMessage: String? = nil
 
     private var cancellables = Set<AnyCancellable>()
+    private var searchTask: Task<Void, Never>?
 
     public init() {
         // Setup search query debouncer (350ms)
@@ -18,7 +19,8 @@ public class SearchViewModel: ObservableObject {
             .debounce(for: .milliseconds(350), scheduler: DispatchQueue.main)
             .removeDuplicates()
             .sink { [weak self] query in
-                Task {
+                self?.searchTask?.cancel()
+                self?.searchTask = Task { [weak self] in
                     await self?.performSearch(query: query)
                 }
             }
@@ -37,6 +39,7 @@ public class SearchViewModel: ObservableObject {
     public func performSearch(query: String) async {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             self.searchResults = []
+            self.errorMessage = nil
             self.isLoading = false
             return
         }
@@ -46,9 +49,11 @@ public class SearchViewModel: ObservableObject {
 
         do {
             let results = try await TMDBService.shared.searchMedia(query: query)
+            guard !Task.isCancelled else { return }
             self.searchResults = results
         } catch {
-            self.errorMessage = "Failed to fetch search results."
+            guard !Task.isCancelled else { return }
+            self.errorMessage = error.localizedDescription
         }
 
         isLoading = false

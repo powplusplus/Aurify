@@ -12,11 +12,7 @@ public struct SubtitleOverlayView: View {
     }
 
     public var body: some View {
-        guard let subtitleText = text, !subtitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return AnyView(EmptyView())
-        }
-
-        return AnyView(
+        if let subtitleText = text, !subtitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             VStack {
                 Spacer()
                 Text(subtitleText)
@@ -31,6 +27,9 @@ public struct SubtitleOverlayView: View {
                     .padding(.bottom, 60)
             }
             .padding(.horizontal, 24)
-        )
+            .allowsHitTesting(false)
+            .accessibilityLabel("Subtitles")
+            .accessibilityValue(subtitleText)
+        }
     }
 }

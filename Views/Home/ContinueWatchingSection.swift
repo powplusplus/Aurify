@@ -10,98 +10,70 @@ public struct ContinueWatchingSection: View {
     }
 
     public var body: some View {
-        guard !items.isEmpty else { return AnyView(EmptyView()) }
-
-        return AnyView(
+        if !items.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("Continue Watching")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-
-                    Spacer()
-
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 16))
-                        .foregroundColor(.cyan)
-                }
-                .padding(.horizontal, 20)
+                Label("Continue watching", systemImage: "clock.arrow.circlepath")
+                    .font(.title3.bold())
+                    .padding(.horizontal, 20)
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 16) {
+                    LazyHStack(spacing: 16) {
                         ForEach(items) { progress in
-                            Button(action: { onSelect(progress) }) {
-                                ZStack(alignment: .bottomLeading) {
-                                    AsyncImage(url: progress.mediaItem.fullBackdropURL ?? progress.mediaItem.fullPosterURL) { phase in
-                                        switch phase {
-                                        case .success(let image):
-                                            image
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
-                                        default:
-                                            Color.gray.opacity(0.3)
-                                        }
-                                    }
-                                    .frame(width: 240, height: 135)
-                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                                    // Dark gradient overlay
-                                    LinearGradient(
-                                        colors: [.clear, .black.opacity(0.85)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                                    // Center play button
-                                    Image(systemName: "play.circle.fill")
-                                        .font(.system(size: 38))
-                                        .foregroundColor(.white)
-                                        .shadow(color: .black.opacity(0.5), radius: 8)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                                    // Bottom details & progress
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text(progress.mediaItem.title)
-                                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                                            .foregroundColor(.white)
-                                            .lineLimit(1)
-
-                                        if let s = progress.seasonNumber, let e = progress.episodeNumber {
-                                            Text("S\(s) E\(e) • \(progress.formattedTimeRemaining)")
-                                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                                .foregroundColor(.cyan)
-                                        } else {
-                                            Text(progress.formattedTimeRemaining)
-                                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                                .foregroundColor(.cyan)
-                                        }
-
-                                        // Progress bar
-                                        ZStack(alignment: .leading) {
-                                            Capsule()
-                                                .fill(Color.white.opacity(0.3))
-                                                .frame(height: 4)
-                                            Capsule()
-                                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
-                                                .frame(width: max(220 * CGFloat(progress.progressFraction), 8), height: 4)
-                                        }
-                                    }
-                                    .padding(12)
-                                }
-                                .frame(width: 240, height: 135)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                )
-                                .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
+                            Button { onSelect(progress) } label: {
+                                card(progress)
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, 20)
                 }
             }
-        )
+            .foregroundStyle(.white)
+        }
+    }
+
+    private func card(_ progress: WatchProgress) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            AsyncImage(url: progress.mediaItem.fullBackdropURL ?? progress.mediaItem.fullPosterURL) { phase in
+                if case let .success(image) = phase {
+                    image.resizable().scaledToFill()
+                } else {
+                    LinearGradient(colors: [.indigo.opacity(0.45), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+            }
+            .frame(width: 250, height: 142)
+            .clipped()
+
+            LinearGradient(colors: [.clear, .black.opacity(0.92)], startPoint: .top, endPoint: .bottom)
+
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 38))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .shadow(radius: 8)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(progress.mediaItem.title).font(.subheadline.bold()).lineLimit(1)
+                Text(progressLabel(progress)).font(.caption).foregroundStyle(Color.aurifyAccent)
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.25))
+                        Capsule().fill(Color.aurifyAccent)
+                            .frame(width: geometry.size.width * progress.progressFraction)
+                    }
+                }
+                .frame(height: 4)
+            }
+            .padding(12)
+        }
+        .frame(width: 250, height: 142)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.white.opacity(0.14)))
+    }
+
+    private func progressLabel(_ progress: WatchProgress) -> String {
+        if let season = progress.seasonNumber, let episode = progress.episodeNumber {
+            return "S\(season) E\(episode) · \(progress.formattedTimeRemaining)"
+        }
+        return progress.formattedTimeRemaining
     }
 }

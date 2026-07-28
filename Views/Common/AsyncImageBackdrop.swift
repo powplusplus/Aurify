@@ -3,10 +3,12 @@ import SwiftUI
 public struct AsyncImageBackdrop: View {
     public let url: URL?
     public let height: CGFloat
+    public let contentMode: ContentMode
 
-    public init(url: URL?, height: CGFloat = 360) {
+    public init(url: URL?, height: CGFloat = 360, contentMode: ContentMode = .fill) {
         self.url = url
         self.height = height
+        self.contentMode = contentMode
     }
 
     public var body: some View {
@@ -16,7 +18,7 @@ public struct AsyncImageBackdrop: View {
                 case .success(let image):
                     image
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: contentMode)
                 case .failure, .empty:
                     LinearGradient(
                         colors: [Color(white: 0.15), Color.black],

@@ -15,30 +15,36 @@ public class HomeViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     public init() {
-        // Observe watch history changes
         WatchHistoryManager.shared.$history
             .receive(on: DispatchQueue.main)
+            .map { $0.filter(\.isContinueWatching) }
             .assign(to: &$continueWatching)
     }
 
     public func loadContent() async {
         isLoading = true
         errorMessage = nil
-        
-        do {
-            async let trending = TMDBService.shared.fetchTrending(mediaType: selectedMediaType)
-            async let movies = TMDBService.shared.fetchPopular(mediaType: .movie)
-            async let series = TMDBService.shared.fetchPopular(mediaType: .tv)
-            async let topRated = TMDBService.shared.fetchTopRated(mediaType: selectedMediaType)
 
-            self.trendingMedia = try await trending
-            self.popularMovies = try await movies
-            self.popularSeries = try await series
-            self.topRatedMedia = try await topRated
-        } catch {
-            self.errorMessage = "Unable to load media content. Please check your internet connection."
+        let trendingTask = Task { try? await TMDBService.shared.fetchTrending(mediaType: selectedMediaType) }
+        let moviesTask = Task { try? await TMDBService.shared.fetchPopular(mediaType: .movie) }
+        let seriesTask = Task { try? await TMDBService.shared.fetchPopular(mediaType: .tv) }
+        let topRatedTask = Task { try? await TMDBService.shared.fetchTopRated(mediaType: selectedMediaType) }
+        let results = await (
+            trendingTask.value,
+            moviesTask.value,
+            seriesTask.value,
+            topRatedTask.value
+        )
+
+        trendingMedia = results.0 ?? []
+        popularMovies = results.1 ?? []
+        popularSeries = results.2 ?? []
+        topRatedMedia = results.3 ?? []
+        if trendingMedia.isEmpty && popularMovies.isEmpty && popularSeries.isEmpty && topRatedMedia.isEmpty {
+            errorMessage = UserSettings.shared.hasTMDBCredential
+                ? "The catalog could not be loaded. Check your connection or TMDB token."
+                : CatalogError.missingCredential.localizedDescription
         }
-        
         isLoading = false
     }
 

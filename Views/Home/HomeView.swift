@@ -2,223 +2,132 @@ import SwiftUI
 
 public struct HomeView: View {
     @StateObject private var viewModel = HomeViewModel()
-    @State private var selectedMediaForDetail: MediaItem? = nil
-    @State private var selectedCategory: String = "All"
-    
-    let categories = ["All", "Action", "Sci-Fi", "Drama", "Animation", "Comedy", "Thriller"]
+    @State private var selectedMedia: MediaItem?
 
     public init() {}
 
     public var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
-                // Background color palette
-                Color(red: 0.05, green: 0.05, blue: 0.07)
-                    .ignoresSafeArea()
-
-                if viewModel.isLoading && viewModel.trendingMedia.isEmpty {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.4)
-                            .tint(.cyan)
-                        Text("Loading Aurify...")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                } else {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 24) {
-                            
-                            // Top Bar Header
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("AURIFY")
-                                        .font(.system(size: 24, weight: .black, design: .rounded))
-                                        .foregroundStyle(
-                                            LinearGradient(
-                                                colors: [.cyan, .blue, .purple],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                    Text("iOS 27 Vision Edition")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white.opacity(0.4))
-                                }
-
-                                Spacer()
-
-                                // Media type switcher (Movies / TV)
-                                HStack(spacing: 4) {
-                                    ForEach(MediaType.allCases) { type in
-                                        Button(action: {
-                                            Task {
-                                                await viewModel.switchMediaType(type)
-                                            }
-                                        }) {
-                                            Text(type.displayName)
-                                                .font(.system(size: 12, weight: viewModel.selectedMediaType == type ? .bold : .medium, design: .rounded))
-                                                .foregroundColor(viewModel.selectedMediaType == type ? .black : .white)
-                                                .padding(.horizontal, 14)
-                                                .padding(.vertical, 8)
-                                                .background(
-                                                    ZStack {
-                                                        if viewModel.selectedMediaType == type {
-                                                            Capsule().fill(Color.white)
-                                                        } else {
-                                                            Capsule().fill(Color.clear)
-                                                        }
-                                                    }
-                                                )
-                                        }
-                                    }
-                                }
-                                .padding(4)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                                .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            }
-                            .padding(.horizontal, 20)
-                            .padding(.top, 10)
-
-                            // Category Filter Pills
-                            CategoryPills(categories: categories, selectedCategory: $selectedCategory)
-
-                            // Hero Banner Carousel
-                            if let heroItem = viewModel.trendingMedia.first {
-                                heroBannerView(heroItem)
-                            }
-
-                            // Continue Watching Row
-                            ContinueWatchingSection(items: viewModel.continueWatching) { progress in
-                                selectedMediaForDetail = progress.mediaItem
-                            }
-
-                            // Trending Rail
-                            mediaRail(title: "🔥 Trending Right Now", items: viewModel.trendingMedia)
-
-                            // Popular Movies Rail
-                            mediaRail(title: "🍿 Popular Movies", items: viewModel.popularMovies)
-
-                            // Popular TV Series Rail
-                            mediaRail(title: "📺 Top TV Series", items: viewModel.popularSeries)
-
-                            // Top Rated Rail
-                            mediaRail(title: "⭐ Top Rated Masterpieces", items: viewModel.topRatedMedia)
-                        }
-                        .padding(.bottom, 40)
-                    }
-                    .refreshable {
-                        await viewModel.loadContent()
-                    }
-                }
+                Color.aurifyBackground.ignoresSafeArea()
+                content
             }
-            #if os(iOS)
-            .navigationBarHidden(true)
-            #endif
-            .sheet(item: $selectedMediaForDetail) { item in
-                MediaDetailView(mediaItem: item)
-            }
+            .sheet(item: $selectedMedia) { MediaDetailView(mediaItem: $0) }
             .task {
-                if viewModel.trendingMedia.isEmpty {
-                    await viewModel.loadContent()
-                }
+                if viewModel.trendingMedia.isEmpty { await viewModel.loadContent() }
             }
         }
-        #if os(iOS)
-        .navigationViewStyle(StackNavigationViewStyle())
-        #endif
     }
 
-    private func heroBannerView(_ item: MediaItem) -> some View {
-        Button(action: { selectedMediaForDetail = item }) {
-            ZStack(alignment: .bottomLeading) {
-                AsyncImageBackdrop(url: item.fullBackdropURL, height: 280)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("SPOTLIGHT")
-                            .font(.system(size: 10, weight: .black, design: .rounded))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.cyan)
-                            .clipShape(Capsule())
-
-                        Spacer()
-                    }
-
-                    Text(item.title)
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-
-                    Text(item.overview)
-                        .font(.system(size: 12, weight: .regular, design: .rounded))
-                        .foregroundColor(.white.opacity(0.75))
-                        .lineLimit(2)
-
-                    HStack(spacing: 12) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 12))
-                            Text("Watch Now")
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                        }
-                        .foregroundColor(.black)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(Color.white)
-                        .clipShape(Capsule())
-
-                        HStack(spacing: 4) {
-                            Image(systemName: "star.fill")
-                                .foregroundColor(.yellow)
-                            Text(String(format: "%.1f", item.voteAverage))
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    }
-                    .padding(.top, 4)
-                }
-                .padding(20)
+    @ViewBuilder
+    private var content: some View {
+        if viewModel.isLoading && viewModel.trendingMedia.isEmpty {
+            VStack(spacing: 14) {
+                ProgressView().controlSize(.large).tint(.aurifyAccent)
+                Text("Loading Aurify").foregroundStyle(.secondary)
             }
-            .frame(height: 280)
-            .padding(.horizontal, 20)
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                    .padding(.horizontal, 20)
-            )
-            .shadow(color: .black.opacity(0.4), radius: 15, x: 0, y: 10)
+        } else if let error = viewModel.errorMessage, viewModel.trendingMedia.isEmpty {
+            ContentUnavailableView {
+                Label("Catalog unavailable", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(error)
+            } actions: {
+                Button("Try Again") { Task { await viewModel.loadContent() } }
+                    .buttonStyle(.borderedProminent)
+            }
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 26) {
+                    header
+                    if let hero = viewModel.trendingMedia.first { heroBanner(hero) }
+                    ContinueWatchingSection(items: viewModel.continueWatching) { selectedMedia = $0.mediaItem }
+                    mediaRail(title: "Trending now", items: viewModel.trendingMedia)
+                    mediaRail(title: "Popular movies", items: viewModel.popularMovies)
+                    mediaRail(title: "Popular series", items: viewModel.popularSeries)
+                    mediaRail(title: "Top rated", items: viewModel.topRatedMedia)
+                }
+                .padding(.bottom, 36)
+            }
+            .refreshable { await viewModel.loadContent() }
         }
-        .buttonStyle(PlainButtonStyle())
+    }
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Aurify")
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(LinearGradient(colors: [.white, .indigo, .purple], startPoint: .leading, endPoint: .trailing))
+                Text("Native cinema")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Picker("Media type", selection: Binding(
+                get: { viewModel.selectedMediaType },
+                set: { type in Task { await viewModel.switchMediaType(type) } }
+            )) {
+                Text("Movies").tag(MediaType.movie)
+                Text("Series").tag(MediaType.tv)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 180)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+    }
+
+    private func heroBanner(_ item: MediaItem) -> some View {
+        Button { selectedMedia = item } label: {
+            ZStack(alignment: .bottomLeading) {
+                AsyncImageBackdrop(url: item.fullBackdropURL ?? item.fullPosterURL, height: 300)
+                LinearGradient(colors: [.clear, .black.opacity(0.88)], startPoint: .center, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("SPOTLIGHT")
+                        .font(.caption2.weight(.black))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Color.aurifyAccent, in: Capsule())
+                    Text(item.title)
+                        .font(.title.bold())
+                        .lineLimit(2)
+                    Text(item.overview)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(2)
+                    Label("View details", systemImage: "play.fill")
+                        .font(.subheadline.bold())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(.black)
+                        .background(.white, in: Capsule())
+                }
+                .foregroundStyle(.white)
+                .padding(22)
+            }
+            .frame(height: 300)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(.white.opacity(0.13)))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
     }
 
     private func mediaRail(title: String, items: [MediaItem]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .font(.title3.bold())
                 .padding(.horizontal, 20)
-
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
+                LazyHStack(spacing: 14) {
                     ForEach(items) { item in
-                        Button(action: { selectedMediaForDetail = item }) {
-                            PosterCard(mediaItem: item)
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                        Button { selectedMedia = item } label: { PosterCard(mediaItem: item) }
+                            .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 20)
             }
         }
+        .foregroundStyle(.white)
     }
 }
