@@ -68,6 +68,26 @@ public struct CustomPlayerControlsView: View {
                             .clipShape(Circle())
                     }
 
+                    // Audio Language Menu
+                    if !viewModel.availableAudioTracks.isEmpty {
+                        Menu {
+                            ForEach(viewModel.availableAudioTracks) { track in
+                                Button {
+                                    viewModel.selectAudioTrack(track)
+                                } label: {
+                                    Label(track.label, systemImage: viewModel.selectedAudioTrackID == track.id ? "checkmark" : "speaker.wave.2")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(viewModel.selectedAudioTrackID == nil ? .white : .cyan)
+                                .padding(10)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                        }
+                    }
+
                     // Quality Menu
                     Menu {
                         ForEach(viewModel.availableSources) { source in

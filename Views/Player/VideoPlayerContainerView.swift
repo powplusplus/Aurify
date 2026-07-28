@@ -83,6 +83,16 @@ public struct VideoPlayerContainerView: View {
                 backgroundOpacity: UserSettings.shared.subtitleBgOpacity
             )
 
+            if viewModel.isBuffering && viewModel.playbackError == nil {
+                ProgressView("Loading video…")
+                    .tint(.white)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 14)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+            }
+
             // Gesture Alert Message Popup (e.g. +10s / -10s)
             if let gestureMsg = viewModel.gestureMessage {
                 Text(gestureMsg)
@@ -93,6 +103,32 @@ public struct VideoPlayerContainerView: View {
                     .background(.ultraThinMaterial)
                     .clipShape(Capsule())
                     .transition(.scale.combined(with: .opacity))
+            }
+
+            if let error = viewModel.playbackError {
+                VStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 30))
+                        .foregroundColor(.yellow)
+                    Text(error)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white)
+                    Button("Retry") {
+                        viewModel.retryPlayback()
+                    }
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 10)
+                    .background(Color.white)
+                    .clipShape(Capsule())
+                }
+                .padding(24)
+                .frame(maxWidth: 340)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .padding(24)
             }
 
             // Glass Controls Overlay
