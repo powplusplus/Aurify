@@ -49,6 +49,7 @@ private struct VidLinkStream: Decodable {
     let playlist: String?
     let captions: [VidLinkCaption]?
     let headers: [String: String]?
+    let preferredHeaders: [String: String]?
 }
 
 private struct VidLinkQuality: Decodable {
@@ -111,6 +112,11 @@ public actor StreamResolver {
     public static let shared = StreamResolver()
 
     private let session: URLSession
+    private let vidLinkPlaybackHeaders = [
+        "Referer": "https://vidlink.pro/",
+        "Origin": "https://vidlink.pro",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+    ]
 
     private init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -181,13 +187,14 @@ public actor StreamResolver {
         guard let url = URL(string: "https://vidlink.pro/api/b/\(path)") else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
-        request.setValue("https://vidlink.pro/", forHTTPHeaderField: "Referer")
-        request.setValue("https://vidlink.pro", forHTTPHeaderField: "Origin")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+        for (field, value) in vidLinkPlaybackHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
 
         let response: VidLinkResponse = try await fetchJSON(VidLinkResponse.self, request: request)
         guard let stream = response.stream else { throw StreamResolverError.noPlayableSource }
-        let headers = stream.headers ?? [:]
+        var headers = mergingHTTPHeaders(vidLinkPlaybackHeaders, with: stream.preferredHeaders ?? [:])
+        headers = mergingHTTPHeaders(headers, with: stream.headers ?? [:])
         var sources: [StreamSource] = []
 
         if let playlist = stream.playlist, let playlistURL = URL(string: playlist) {
@@ -205,9 +212,7 @@ public actor StreamResolver {
             guard let sourceURL = URL(string: quality.url) else { continue }
             let mappedQuality = StreamQuality.from(providerValue: label)
             let isHLS = quality.type?.lowercased() == "hls" || sourceURL.pathExtension.lowercased() == "m3u8"
-            let sourceHeaders = headers.merging(quality.headers ?? [:]) { _, qualityValue in
-                qualityValue
-            }
+            let sourceHeaders = mergingHTTPHeaders(headers, with: quality.headers ?? [:])
             sources.append(StreamSource(
                 url: sourceURL,
                 quality: mappedQuality,
@@ -324,6 +329,22 @@ public actor StreamResolver {
             if lhs.quality == rhs.quality { return lhs.name < rhs.name }
             return lhs.quality > rhs.quality
         }
+    }
+
+    private func mergingHTTPHeaders(
+        _ base: [String: String],
+        with overrides: [String: String]
+    ) -> [String: String] {
+        var result = base
+        for (field, value) in overrides {
+            if let existing = result.keys.first(where: {
+                $0.caseInsensitiveCompare(field) == .orderedSame
+            }) {
+                result.removeValue(forKey: existing)
+            }
+            result[field] = value
+        }
+        return result
     }
 
     private func deduplicateSubtitles(_ subtitles: [SubtitleTrack]) -> [SubtitleTrack] {
