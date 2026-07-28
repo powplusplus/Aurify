@@ -16,23 +16,9 @@ public struct AsyncImageBackdrop: View {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
-                    if contentMode == .fit {
-                        ZStack {
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .blur(radius: 24)
-                                .opacity(0.45)
-
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                        }
-                    } else {
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    }
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
                 case .failure, .empty:
                     LinearGradient(
                         colors: [Color(white: 0.15), Color.black],

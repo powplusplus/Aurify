@@ -14,12 +14,17 @@ public struct MediaDetailView: View {
     }
 
     public var body: some View {
-        ZStack {
-            Color.aurifyBackground.ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    hero
-                    details
+        GeometryReader { geometry in
+            let isPortrait = geometry.size.height >= geometry.size.width
+            let heroHeight = isPortrait ? geometry.size.width * 9 / 16 : 390
+
+            ZStack {
+                Color.aurifyBackground.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        hero(height: heroHeight, contentMode: isPortrait ? .fit : .fill)
+                        details
+                    }
                 }
             }
         }
@@ -37,12 +42,12 @@ public struct MediaDetailView: View {
         }
     }
 
-    private var hero: some View {
+    private func hero(height: CGFloat, contentMode: ContentMode) -> some View {
         ZStack(alignment: .top) {
             AsyncImageBackdrop(
                 url: viewModel.mediaItem.fullBackdropURL ?? viewModel.mediaItem.fullPosterURL,
-                height: 390,
-                contentMode: .fit
+                height: height,
+                contentMode: contentMode
             )
             HStack {
                 circleButton("xmark") { dismiss() }
@@ -54,7 +59,7 @@ public struct MediaDetailView: View {
             }
             .padding(20)
         }
-        .frame(height: 390)
+        .frame(height: height)
     }
 
     private var details: some View {
