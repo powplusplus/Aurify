@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 public struct ResolvedMediaStream: Codable, Hashable {
     public let sources: [StreamSource]
@@ -50,6 +53,8 @@ private struct VidLinkStream: Decodable {
     let captions: [VidLinkCaption]?
     let headers: [String: String]?
     let preferredHeaders: [String: String]?
+    let playlistHeaders: [String: String]?
+    let deliveryType: String?
 }
 
 private struct VidLinkQuality: Decodable {
@@ -108,6 +113,146 @@ private struct CustomResolverSubtitle: Decodable {
     let format: String?
 }
 
+private struct DASHSegmentTemplate {
+    let duration: Double
+    let initialization: String
+    let media: String
+    let startNumber: Int
+}
+
+private struct DASHRepresentation {
+    let id: String
+    let contentType: String
+    let codecs: String
+    let bandwidth: Int
+    let width: Int?
+    let height: Int?
+    let segmentTemplate: DASHSegmentTemplate
+}
+
+private struct DASHManifest {
+    let duration: Double
+    let video: [DASHRepresentation]
+    let audio: [DASHRepresentation]
+}
+
+private enum DASHConversionError: Error {
+    case invalidManifest
+    case unsupportedManifest
+}
+
+private final class DASHManifestParser: NSObject, XMLParserDelegate {
+    private var presentationDuration: Double?
+    private var adaptationContentType = ""
+    private var currentRepresentation: (id: String, contentType: String, codecs: String, bandwidth: Int, width: Int?, height: Int?)?
+    private var currentTemplate: DASHSegmentTemplate?
+    private var video: [DASHRepresentation] = []
+    private var audio: [DASHRepresentation] = []
+
+    static func parse(_ data: Data) throws -> DASHManifest {
+        let delegate = DASHManifestParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse(),
+              let duration = delegate.presentationDuration,
+              duration > 0,
+              !delegate.video.isEmpty else {
+            throw parser.parserError ?? DASHConversionError.invalidManifest
+        }
+        return DASHManifest(duration: duration, video: delegate.video, audio: delegate.audio)
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        switch elementName {
+        case "MPD":
+            presentationDuration = Self.iso8601Duration(attributeDict["mediaPresentationDuration"])
+        case "AdaptationSet":
+            adaptationContentType = attributeDict["contentType"] ?? ""
+        case "Representation":
+            let mimeType = attributeDict["mimeType"] ?? ""
+            let contentType = adaptationContentType.isEmpty
+                ? (mimeType.hasPrefix("audio/") ? "audio" : "video")
+                : adaptationContentType
+            currentRepresentation = (
+                id: attributeDict["id"] ?? UUID().uuidString,
+                contentType: contentType,
+                codecs: attributeDict["codecs"] ?? "",
+                bandwidth: Int(attributeDict["bandwidth"] ?? "") ?? 1,
+                width: Int(attributeDict["width"] ?? ""),
+                height: Int(attributeDict["height"] ?? "")
+            )
+            currentTemplate = nil
+        case "SegmentTemplate":
+            guard currentRepresentation != nil,
+                  let rawDuration = Double(attributeDict["duration"] ?? ""),
+                  let initialization = attributeDict["initialization"],
+                  let media = attributeDict["media"] else { return }
+            let timescale = Double(attributeDict["timescale"] ?? "1") ?? 1
+            guard timescale > 0 else { return }
+            currentTemplate = DASHSegmentTemplate(
+                duration: rawDuration / timescale,
+                initialization: initialization,
+                media: media,
+                startNumber: Int(attributeDict["startNumber"] ?? "1") ?? 1
+            )
+        default:
+            break
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        if elementName == "Representation",
+           let representation = currentRepresentation,
+           let template = currentTemplate {
+            let item = DASHRepresentation(
+                id: representation.id,
+                contentType: representation.contentType,
+                codecs: representation.codecs,
+                bandwidth: representation.bandwidth,
+                width: representation.width,
+                height: representation.height,
+                segmentTemplate: template
+            )
+            if representation.contentType == "audio" {
+                audio.append(item)
+            } else {
+                video.append(item)
+            }
+            currentRepresentation = nil
+            currentTemplate = nil
+        } else if elementName == "AdaptationSet" {
+            adaptationContentType = ""
+        }
+    }
+
+    private static func iso8601Duration(_ value: String?) -> Double? {
+        guard let value else { return nil }
+        let expression = try? NSRegularExpression(
+            pattern: #"^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$"#
+        )
+        let range = NSRange(value.startIndex..., in: value)
+        guard let match = expression?.firstMatch(in: value, range: range) else { return nil }
+        func component(_ index: Int) -> Double {
+            let range = match.range(at: index)
+            guard range.location != NSNotFound,
+                  let swiftRange = Range(range, in: value) else { return 0 }
+            return Double(value[swiftRange]) ?? 0
+        }
+        return component(1) * 3600 + component(2) * 60 + component(3)
+    }
+}
+
 public actor StreamResolver {
     public static let shared = StreamResolver()
 
@@ -115,7 +260,7 @@ public actor StreamResolver {
     private let vidLinkPlaybackHeaders = [
         "Referer": "https://vidlink.pro/",
         "Origin": "https://vidlink.pro",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1"
     ]
 
     private init() {
@@ -187,9 +332,12 @@ public actor StreamResolver {
         guard let url = URL(string: "https://vidlink.pro/api/b/\(path)") else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         for (field, value) in vidLinkPlaybackHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
+        request.setValue("webkit", forHTTPHeaderField: "X-Playback-Environment")
+        request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
 
         let response: VidLinkResponse = try await fetchJSON(VidLinkResponse.self, request: request)
         guard let stream = response.stream else { throw StreamResolverError.noPlayableSource }
@@ -198,14 +346,28 @@ public actor StreamResolver {
         var sources: [StreamSource] = []
 
         if let playlist = stream.playlist, let playlistURL = URL(string: playlist) {
-            sources.append(StreamSource(
-                url: playlistURL,
-                quality: .auto,
-                isHLS: true,
-                provider: .vidLink,
-                name: "Adaptive",
-                headers: headers
-            ))
+            let deliveryType = stream.deliveryType?.lowercased() ?? stream.type?.lowercased()
+            if deliveryType == "dash" || playlistURL.pathExtension.lowercased() == "mpd" {
+                let dashHeaders = mergingHTTPHeaders(headers, with: stream.playlistHeaders ?? [:])
+                let hlsURL = try await convertDASHToHLS(manifestURL: playlistURL, headers: dashHeaders)
+                sources.append(StreamSource(
+                    url: hlsURL,
+                    quality: .auto,
+                    isHLS: true,
+                    provider: .vidLink,
+                    name: "Adaptive",
+                    headers: dashHeaders
+                ))
+            } else {
+                sources.append(StreamSource(
+                    url: playlistURL,
+                    quality: .auto,
+                    isHLS: true,
+                    provider: .vidLink,
+                    name: "Adaptive",
+                    headers: headers
+                ))
+            }
         }
 
         for (label, quality) in stream.qualities ?? [:] {
@@ -309,12 +471,131 @@ public actor StreamResolver {
     }
 
     private func fetchJSON<T: Decodable>(_ type: T.Type, request: URLRequest) async throws -> T {
+        let data = try await fetchData(request: request)
+        if data == Data("null".utf8) { throw StreamResolverError.noPlayableSource }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    private func fetchData(request: URLRequest) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
-        if data == Data("null".utf8) { throw StreamResolverError.noPlayableSource }
-        return try JSONDecoder().decode(type, from: data)
+        return data
+    }
+
+    private func convertDASHToHLS(manifestURL: URL, headers: [String: String]) async throws -> URL {
+        var request = URLRequest(url: manifestURL)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        let manifest = try DASHManifestParser.parse(await fetchData(request: request))
+        guard let baseURL = URL(string: ".", relativeTo: manifestURL)?.absoluteURL else {
+            throw DASHConversionError.invalidManifest
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AurifyStreams", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let audio = manifest.audio.first
+        var master = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
+        if let audio {
+            let audioName = "audio.m3u8"
+            try mediaPlaylist(for: audio, manifest: manifest, baseURL: baseURL)
+                .write(to: directory.appendingPathComponent(audioName), atomically: true, encoding: .utf8)
+            master.append(#"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Default",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8""#)
+        }
+
+        for representation in manifest.video.sorted(by: { $0.bandwidth > $1.bandwidth }) {
+            let safeID = representation.id.replacingOccurrences(
+                of: #"[^A-Za-z0-9_-]"#,
+                with: "-",
+                options: .regularExpression
+            )
+            let playlistName = "video-\(safeID).m3u8"
+            try mediaPlaylist(for: representation, manifest: manifest, baseURL: baseURL)
+                .write(to: directory.appendingPathComponent(playlistName), atomically: true, encoding: .utf8)
+
+            var attributes = ["BANDWIDTH=\(representation.bandwidth)"]
+            if let width = representation.width, let height = representation.height {
+                attributes.append("RESOLUTION=\(width)x\(height)")
+            }
+            let codecs = [representation.codecs, audio?.codecs]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: ",")
+            if !codecs.isEmpty { attributes.append(#"CODECS="\#(codecs)""#) }
+            if audio != nil { attributes.append(#"AUDIO="audio""#) }
+            master.append("#EXT-X-STREAM-INF:\(attributes.joined(separator: ","))")
+            master.append(playlistName)
+        }
+
+        guard master.count > 3 else { throw DASHConversionError.unsupportedManifest }
+        let masterURL = directory.appendingPathComponent("master.m3u8")
+        try (master.joined(separator: "\n") + "\n")
+            .write(to: masterURL, atomically: true, encoding: .utf8)
+        return masterURL
+    }
+
+    private func mediaPlaylist(
+        for representation: DASHRepresentation,
+        manifest: DASHManifest,
+        baseURL: URL
+    ) throws -> String {
+        let template = representation.segmentTemplate
+        guard template.duration > 0 else { throw DASHConversionError.unsupportedManifest }
+        let segmentCount = Int(ceil(manifest.duration / template.duration))
+        guard segmentCount > 0 else { throw DASHConversionError.unsupportedManifest }
+
+        let initialization = expandedDASHTemplate(
+            template.initialization,
+            representationID: representation.id,
+            number: template.startNumber
+        )
+        guard let initializationURL = URL(string: initialization, relativeTo: baseURL)?.absoluteURL else {
+            throw DASHConversionError.invalidManifest
+        }
+
+        var lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-TARGETDURATION:\(Int(ceil(template.duration)))",
+            "#EXT-X-MEDIA-SEQUENCE:\(template.startNumber)",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            #"#EXT-X-MAP:URI="\#(initializationURL.absoluteString)""#
+        ]
+        for offset in 0..<segmentCount {
+            let elapsed = Double(offset) * template.duration
+            let duration = min(template.duration, manifest.duration - elapsed)
+            let path = expandedDASHTemplate(
+                template.media,
+                representationID: representation.id,
+                number: template.startNumber + offset
+            )
+            guard let segmentURL = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
+                throw DASHConversionError.invalidManifest
+            }
+            lines.append(String(format: "#EXTINF:%.3f,", locale: Locale(identifier: "en_US_POSIX"), duration))
+            lines.append(segmentURL.absoluteString)
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private func expandedDASHTemplate(_ template: String, representationID: String, number: Int) -> String {
+        var result = template.replacingOccurrences(of: "$RepresentationID$", with: representationID)
+        if let expression = try? NSRegularExpression(pattern: #"\$Number%0(\d+)d\$"#),
+           let match = expression.firstMatch(in: result, range: NSRange(result.startIndex..., in: result)),
+           let matchRange = Range(match.range(at: 0), in: result),
+           let widthRange = Range(match.range(at: 1), in: result),
+           let width = Int(result[widthRange]) {
+            let formatted = String(format: "%0\(width)d", number)
+            result.replaceSubrange(matchRange, with: formatted)
+        }
+        return result.replacingOccurrences(of: "$Number$", with: String(number))
     }
 
     private func sortSources(_ sources: [StreamSource]) -> [StreamSource] {

@@ -110,15 +110,6 @@ public struct VideoPlayerContainerView: View {
                 .transition(.opacity)
             }
 
-            if viewModel.isBuffering && viewModel.errorMessage == nil {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                    .padding(22)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .allowsHitTesting(false)
-            }
-
             if let error = viewModel.errorMessage {
                 VStack(spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")
