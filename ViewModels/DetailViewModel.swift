@@ -13,6 +13,9 @@ public class DetailViewModel: ObservableObject {
     @Published public var isResolvingStream: Bool = false
     @Published public var resolvedStream: ResolvedMediaStream?
     @Published public var errorMessage: String? = nil
+    @Published public private(set) var providerStates: [ServerProvider: ProviderResolutionState] =
+        Dictionary(uniqueKeysWithValues: ServerProvider.allCases.map { ($0, ProviderResolutionState.idle) })
+    @Published public private(set) var resolvingProvider: ServerProvider?
     
     public init(mediaItem: MediaItem) {
         self.mediaItem = mediaItem
@@ -55,21 +58,59 @@ public class DetailViewModel: ObservableObject {
         let seasonNum = mediaItem.mediaType == .tv ? selectedSeasonNumber : nil
         let epNum = mediaItem.mediaType == .tv ? (selectedEpisode?.episodeNumber ?? 1) : nil
 
-        do {
-            let stream = try await StreamResolver.shared.resolveStream(
-                tmdbId: mediaItem.id,
-                mediaType: mediaItem.mediaType,
-                season: seasonNum,
-                episode: epNum,
-                preferredProvider: provider
-            )
-            self.resolvedStream = stream
-            self.isResolvingStream = false
-            return stream
-        } catch {
-            self.errorMessage = error.localizedDescription
-            self.isResolvingStream = false
-            return nil
+        let candidates: [ServerProvider]
+        if provider == .zstreamAuto {
+            candidates = ServerProvider.nativePlaybackOrder
+                + (UserSettings.shared.customResolverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.custom])
+        } else {
+            candidates = [provider]
         }
+
+        providerStates = Dictionary(uniqueKeysWithValues: ServerProvider.allCases.map {
+            ($0, ProviderResolutionState.idle)
+        })
+        if provider == .zstreamAuto { providerStates[.zstreamAuto] = .searching }
+        var failures: [String] = []
+
+        for (index, candidate) in candidates.enumerated() {
+            resolvingProvider = candidate
+            providerStates[candidate] = .searching
+            do {
+                let stream = try await StreamResolver.shared.resolveStream(
+                    tmdbId: mediaItem.id,
+                    mediaType: mediaItem.mediaType,
+                    season: seasonNum,
+                    episode: epNum,
+                    preferredProvider: candidate
+                )
+                let playbackStream = ResolvedMediaStream(
+                    sources: stream.sources,
+                    subtitles: stream.subtitles,
+                    activeProvider: stream.activeProvider,
+                    fallbackProviders: provider == .zstreamAuto
+                        ? Array(candidates.dropFirst(index + 1))
+                        : []
+                )
+                providerStates[candidate] = .available
+                if provider == .zstreamAuto { providerStates[.zstreamAuto] = .available }
+                resolvedStream = playbackStream
+                resolvingProvider = nil
+                isResolvingStream = false
+                return playbackStream
+            } catch {
+                failures.append("\(candidate.rawValue): \(error.localizedDescription)")
+                providerStates[candidate] = .unavailable(error.localizedDescription)
+            }
+        }
+
+        if provider == .zstreamAuto {
+            providerStates[.zstreamAuto] = .unavailable("No provider returned a playable stream.")
+        }
+        resolvingProvider = nil
+        errorMessage = failures.isEmpty
+            ? StreamResolverError.noPlayableSource.localizedDescription
+            : failures.joined(separator: "\n")
+        isResolvingStream = false
+        return nil
     }
 }

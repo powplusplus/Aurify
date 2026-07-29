@@ -2,6 +2,7 @@ import Foundation
 
 public enum ServerProvider: String, Codable, CaseIterable, Identifiable {
     case zstreamAuto = "Z-Stream Auto"
+    case granite = "Granite"
     case vidLink = "VidLink"
     case custom = "Custom Resolver"
 
@@ -10,6 +11,7 @@ public enum ServerProvider: String, Codable, CaseIterable, Identifiable {
     public var iconName: String {
         switch self {
         case .zstreamAuto: return "sparkles.tv"
+        case .granite: return "mountain.2.fill"
         case .vidLink: return "play.rectangle.fill"
         case .custom: return "server.rack"
         }
@@ -18,12 +20,30 @@ public enum ServerProvider: String, Codable, CaseIterable, Identifiable {
     public var detail: String {
         switch self {
         case .zstreamAuto:
-            return "Uses Z-Stream's current native provider order with automatic fallback."
+            return "Checks each native Z-Stream provider in order until a playable stream is found."
+        case .granite:
+            return "Fast multi-mirror source from Z-Stream's current provider engine."
         case .vidLink:
             return "Uses the VidLink provider contract from Z-Stream's open-source engine."
         case .custom:
             return "Uses a resolver endpoint that you control."
         }
+    }
+
+    public var shortName: String {
+        self == .zstreamAuto ? "Auto" : rawValue
+    }
+
+    public static var nativePlaybackOrder: [ServerProvider] {
+        [.granite, .vidLink]
+    }
+
+    public static var carouselProviders: [ServerProvider] {
+        var providers: [ServerProvider] = [.zstreamAuto] + nativePlaybackOrder
+        if !UserSettings.shared.customResolverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            providers.append(.custom)
+        }
+        return providers
     }
 }
 

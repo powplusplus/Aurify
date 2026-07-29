@@ -22,6 +22,8 @@ public final class PlayerViewModel: ObservableObject {
     @Published public private(set) var availableSources: [StreamSource]
     @Published public private(set) var activeSource: StreamSource?
     @Published public private(set) var activeProvider: ServerProvider
+    @Published public private(set) var providerStates: [ServerProvider: ProviderResolutionState]
+    @Published public private(set) var isResolvingProvider = false
     @Published public private(set) var playbackSpeed: Double
     @Published public var gestureMessage: String?
 
@@ -38,12 +40,18 @@ public final class PlayerViewModel: ObservableObject {
     private var lastProgressSaveTime: TimeInterval = -20
     private var audioSelectionGroup: AVMediaSelectionGroup?
     private var audioOptions: [String: AVMediaSelectionOption] = [:]
+    private var fallbackProviders: [ServerProvider]
+    private var isAttemptingAutomaticFallback = false
 
     public init(mediaItem: MediaItem, stream: ResolvedMediaStream, seasonNumber: Int? = nil, episodeNumber: Int? = nil) {
         self.mediaItem = mediaItem
         self.availableSources = stream.sources
         self.availableSubtitles = stream.subtitles
         self.activeProvider = stream.activeProvider
+        self.providerStates = Dictionary(uniqueKeysWithValues: ServerProvider.allCases.map {
+            ($0, $0 == stream.activeProvider ? ProviderResolutionState.available : ProviderResolutionState.idle)
+        })
+        self.fallbackProviders = stream.fallbackProviders
         self.seasonNumber = seasonNumber
         self.episodeNumber = episodeNumber
         self.playbackSpeed = UserSettings.shared.playbackSpeed
@@ -133,6 +141,63 @@ public final class PlayerViewModel: ObservableObject {
         activeSource = source
         pendingResumeTime = resume
         installPlayer(source: source, autoplay: isPlaying)
+    }
+
+    @discardableResult
+    public func changeProvider(_ provider: ServerProvider, autoplay: Bool? = nil) async -> Bool {
+        guard provider != .zstreamAuto,
+              provider != activeProvider,
+              !isResolvingProvider else { return false }
+
+        isResolvingProvider = true
+        providerStates[provider] = .searching
+        let resume = currentTime
+        let shouldAutoplay = autoplay ?? isPlaying
+        do {
+            let stream = try await StreamResolver.shared.resolveStream(
+                tmdbId: mediaItem.id,
+                mediaType: mediaItem.mediaType,
+                season: seasonNumber,
+                episode: episodeNumber,
+                preferredProvider: provider
+            )
+            guard let source = stream.sources.first(where: { $0.quality == UserSettings.shared.defaultQuality })
+                    ?? stream.sources.first else {
+                throw StreamResolverError.noPlayableSource
+            }
+
+            if case .unavailable? = providerStates[activeProvider] {
+                // Preserve the failed state so the source sheet explains the automatic switch.
+            } else {
+                providerStates[activeProvider] = .idle
+            }
+            providerStates[provider] = .available
+            availableSources = stream.sources
+            availableSubtitles = stream.subtitles
+            activeProvider = stream.activeProvider
+            fallbackProviders.removeAll { $0 == provider }
+            activeSource = source
+            selectedSubtitleTrack = nil
+            parsedCues = []
+            activeSubtitleCue = nil
+            pendingResumeTime = resume
+            installPlayer(source: source, autoplay: shouldAutoplay)
+
+            if UserSettings.shared.subtitlesEnabled {
+                let preferred = UserSettings.shared.preferredSubtitleLanguage.lowercased()
+                if let track = stream.subtitles.first(where: { $0.language.lowercased() == preferred }) {
+                    selectSubtitleTrack(track)
+                }
+            }
+            showGestureNotification("Playing from \(provider.rawValue)")
+            isResolvingProvider = false
+            return true
+        } catch {
+            providerStates[provider] = .unavailable(error.localizedDescription)
+            showGestureNotification("\(provider.rawValue) unavailable")
+        }
+        isResolvingProvider = false
+        return false
     }
 
     public func setPlaybackSpeed(_ speed: Double) {
@@ -230,8 +295,9 @@ public final class PlayerViewModel: ObservableObject {
                 if status == .readyToPlay {
                     self.loadAudioTracks(from: item)
                 } else if status == .failed {
-                    self.errorMessage = item.error?.localizedDescription ?? "This source could not be played."
-                    self.isBuffering = false
+                    self.handlePlaybackFailure(
+                        item.error?.localizedDescription ?? "This source could not be played."
+                    )
                 }
             }
             .store(in: &itemCancellables)
@@ -241,9 +307,7 @@ public final class PlayerViewModel: ObservableObject {
             .sink { [weak self] notification in
                 guard let self else { return }
                 let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                self.errorMessage = error?.localizedDescription ?? "This source stopped playing."
-                self.isBuffering = false
-                self.isPlaying = false
+                self.handlePlaybackFailure(error?.localizedDescription ?? "This source stopped playing.")
             }
             .store(in: &itemCancellables)
 
@@ -288,6 +352,27 @@ public final class PlayerViewModel: ObservableObject {
             } catch {
                 self.availableAudioTracks = []
             }
+        }
+    }
+
+    private func handlePlaybackFailure(_ message: String) {
+        isBuffering = false
+        isPlaying = false
+        if isResolvingProvider || isAttemptingAutomaticFallback { return }
+        providerStates[activeProvider] = .unavailable(message)
+        guard !fallbackProviders.isEmpty else {
+            errorMessage = message
+            return
+        }
+
+        let provider = fallbackProviders.removeFirst()
+        isAttemptingAutomaticFallback = true
+        gestureMessage = "Trying \(provider.rawValue)…"
+        Task { [weak self] in
+            guard let self else { return }
+            let switched = await self.changeProvider(provider, autoplay: true)
+            self.isAttemptingAutomaticFallback = false
+            if !switched { self.handlePlaybackFailure(message) }
         }
     }
 

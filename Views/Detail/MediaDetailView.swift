@@ -80,11 +80,13 @@ public struct MediaDetailView: View {
                 }
             }
 
+            providerSection
+
             Button { Task { await play() } } label: {
                 HStack {
                     if viewModel.isResolvingStream { ProgressView().tint(.black) }
                     else { Image(systemName: resumeProgress == nil ? "play.fill" : "play.fill") }
-                    Text(resumeProgress == nil ? "Play" : "Resume")
+                    Text(playButtonTitle)
                     if let resumeProgress { Text("· \(Int(resumeProgress.progressFraction * 100))%").foregroundStyle(.secondary) }
                 }
                 .font(.headline)
@@ -94,17 +96,6 @@ public struct MediaDetailView: View {
                 .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             .disabled(viewModel.isResolvingStream || (viewModel.mediaItem.mediaType == .tv && viewModel.selectedEpisode == nil))
-
-            GlassCard(cornerRadius: 18, padding: 12) {
-                HStack {
-                    Label("Source", systemImage: selectedProvider.iconName)
-                    Spacer()
-                    Picker("Source", selection: $selectedProvider) {
-                        ForEach(ServerProvider.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .labelsHidden()
-                }
-            }
 
             if viewModel.mediaItem.mediaType == .tv,
                let count = viewModel.detailedItem?.numberOfSeasons ?? viewModel.mediaItem.numberOfSeasons {
@@ -147,6 +138,38 @@ public struct MediaDetailView: View {
             season: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedSeasonNumber : nil,
             episode: viewModel.mediaItem.mediaType == .tv ? viewModel.selectedEpisode?.episodeNumber : nil
         )
+    }
+
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Choose a source")
+                    .font(.title3.bold())
+                Spacer()
+                Text(selectedProvider.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.aurifyAccent)
+            }
+
+            ProviderCarousel(
+                selection: $selectedProvider,
+                states: viewModel.providerStates,
+                isEnabled: !viewModel.isResolvingStream
+            )
+            .frame(height: 116)
+
+            Text(selectedProvider.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var playButtonTitle: String {
+        if let provider = viewModel.resolvingProvider {
+            return "Checking \(provider.rawValue)…"
+        }
+        return resumeProgress == nil ? "Find & Play" : "Find & Resume"
     }
 
     private func play() async {

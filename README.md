@@ -14,7 +14,8 @@ You can also set `TMDB_READ_TOKEN` as a user-defined build setting. Never commit
 ## Native features
 
 - Trending, popular, top-rated, multi-search, movie details, TV seasons, and episodes
-- Z-Stream's current VidLink source contract, with a custom resolver fallback
+- Native Z-Stream provider carousel with Granite and VidLink, ordered fallback, live status, and a custom resolver option
+- Automatic provider handoff when a resolved source fails during AVFoundation playback
 - Native HLS/MP4 playback, quality switching, playback speed, AirPlay, and Picture in Picture
 - Provider and external VTT/SRT subtitles with language preference and styling
 - Per-movie and per-episode resume progress, completion state, history, and watchlist

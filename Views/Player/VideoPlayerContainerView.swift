@@ -55,6 +55,8 @@ public struct VideoPlayerContainerView: View {
     @ObservedObject private var settings = UserSettings.shared
     private let onPlaybackFinished: (() -> Void)?
     @State private var handledCompletion = false
+    @State private var showProviderCarousel = false
+    @State private var providerSelection: ServerProvider
 
     public init(
         mediaItem: MediaItem,
@@ -64,6 +66,7 @@ public struct VideoPlayerContainerView: View {
         onPlaybackFinished: (() -> Void)? = nil
     ) {
         self.onPlaybackFinished = onPlaybackFinished
+        _providerSelection = State(initialValue: stream.activeProvider)
         _viewModel = StateObject(wrappedValue: PlayerViewModel(
             mediaItem: mediaItem,
             stream: stream,
@@ -106,8 +109,16 @@ public struct VideoPlayerContainerView: View {
             if viewModel.isControlsVisible {
                 CustomPlayerControlsView(viewModel: viewModel) {
                     dismiss()
+                } onShowProviders: {
+                    providerSelection = viewModel.activeProvider
+                    withAnimation(.easeInOut(duration: 0.2)) { showProviderCarousel = true }
                 }
                 .transition(.opacity)
+            }
+
+            if showProviderCarousel {
+                providerPickerOverlay
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             if let error = viewModel.errorMessage {
@@ -120,6 +131,11 @@ public struct VideoPlayerContainerView: View {
                         .foregroundStyle(.white)
                     HStack {
                         Button("Close") { dismiss() }
+                        Button("Sources") {
+                            viewModel.dismissError()
+                            providerSelection = viewModel.activeProvider
+                            withAnimation(.easeInOut(duration: 0.2)) { showProviderCarousel = true }
+                        }
                         Button("Retry") { viewModel.retry() }
                             .buttonStyle(.borderedProminent)
                     }
@@ -145,6 +161,66 @@ public struct VideoPlayerContainerView: View {
             guard finished, !handledCompletion else { return }
             handledCompletion = true
             if settings.autoPlayNextEpisode { onPlaybackFinished?() }
+        }
+        .onChange(of: viewModel.activeProvider) { _, provider in
+            providerSelection = provider
+        }
+    }
+
+    private var providerPickerOverlay: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.56)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    guard !viewModel.isResolvingProvider else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) { showProviderCarousel = false }
+                }
+
+            GlassCard(cornerRadius: 28, padding: 20) {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Playback source")
+                                .font(.title3.bold())
+                            Text("Switch provider without leaving the native player")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { showProviderCarousel = false }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .frame(width: 36, height: 36)
+                                .background(Color.white.opacity(0.1), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.isResolvingProvider)
+                    }
+
+                    ProviderCarousel(
+                        selection: $providerSelection,
+                        providers: ServerProvider.carouselProviders.filter { $0 != .zstreamAuto },
+                        states: viewModel.providerStates,
+                        isEnabled: !viewModel.isResolvingProvider
+                    ) { provider in
+                        Task {
+                            await viewModel.changeProvider(provider)
+                            if viewModel.activeProvider == provider {
+                                withAnimation(.easeInOut(duration: 0.2)) { showProviderCarousel = false }
+                            } else {
+                                providerSelection = viewModel.activeProvider
+                            }
+                        }
+                    }
+                    .frame(height: 116)
+                }
+                .foregroundStyle(.white)
+            }
+            .frame(maxWidth: 720)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 18)
         }
     }
 }
