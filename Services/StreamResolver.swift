@@ -381,8 +381,18 @@ public actor StreamResolver {
             guard let encryptedURL = mirrors[name]?.url,
                   let rawURL = try? decryptedGraniteURL(encryptedURL),
                   let mirrorURL = URL(string: rawURL),
-                  !name.localizedCaseInsensitiveContains("Astra"),
-                  mirrorURL.host?.hasSuffix(".workers.dev") != true else { continue }
+                  !name.localizedCaseInsensitiveContains("Astra") else { continue }
+
+            let playbackURL: URL
+            if mirrorURL.host?.hasSuffix(".workers.dev") == true {
+                guard let normalizedURL = try? await normalizedGraniteHLS(
+                    masterURL: mirrorURL,
+                    headers: graniteHeaders
+                ) else { continue }
+                playbackURL = normalizedURL
+            } else {
+                playbackURL = mirrorURL
+            }
 
             if name == "Atlas" || rawURL.contains("cdn.vidrock.store/playlist/") {
                 var playlistRequest = URLRequest(url: mirrorURL)
@@ -414,7 +424,7 @@ public actor StreamResolver {
                 }
             } else {
                 sources.append(StreamSource(
-                    url: mirrorURL,
+                    url: playbackURL,
                     quality: .auto,
                     isHLS: true,
                     provider: .granite,
@@ -430,6 +440,78 @@ public actor StreamResolver {
             subtitles: [],
             activeProvider: .granite
         )
+    }
+
+    private func normalizedGraniteHLS(masterURL: URL, headers: [String: String]) async throws -> URL {
+        var masterRequest = URLRequest(url: masterURL)
+        for (field, value) in headers {
+            masterRequest.setValue(value, forHTTPHeaderField: field)
+        }
+        let masterData = try await fetchData(request: masterRequest)
+        guard let masterText = String(data: masterData, encoding: .utf8),
+              masterText.contains("#EXTM3U") else {
+            throw StreamResolverError.noPlayableSource
+        }
+
+        let masterLines = masterText.components(separatedBy: .newlines)
+        let mediaURL: URL
+        let mediaText: String
+        if masterText.contains("#EXT-X-STREAM-INF"),
+           let variantPath = masterLines.first(where: { !$0.isEmpty && !$0.hasPrefix("#") }),
+           let variantURL = URL(string: variantPath, relativeTo: masterURL)?.absoluteURL {
+            var variantRequest = URLRequest(url: variantURL)
+            for (field, value) in headers {
+                variantRequest.setValue(value, forHTTPHeaderField: field)
+            }
+            let variantData = try await fetchData(request: variantRequest)
+            guard let variantText = String(data: variantData, encoding: .utf8),
+                  variantText.contains("#EXTM3U") else {
+                throw StreamResolverError.noPlayableSource
+            }
+            mediaURL = variantURL
+            mediaText = variantText
+        } else {
+            mediaURL = masterURL
+            mediaText = masterText
+        }
+
+        let normalizedLines = mediaText.components(separatedBy: .newlines).map { line -> String in
+            guard !line.isEmpty else { return line }
+            if line.hasPrefix("#") {
+                return absoluteHLSAttributeURIs(in: line, relativeTo: mediaURL)
+            }
+            guard let remoteURL = URL(string: line, relativeTo: mediaURL)?.absoluteURL else { return line }
+            return mediaTypedGraniteURL(remoteURL).absoluteString
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AurifyStreams", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let playlistURL = directory.appendingPathComponent("granite.m3u8")
+        try (normalizedLines.joined(separator: "\n") + "\n")
+            .write(to: playlistURL, atomically: true, encoding: .utf8)
+        return playlistURL
+    }
+
+    private func absoluteHLSAttributeURIs(in line: String, relativeTo baseURL: URL) -> String {
+        guard let expression = try? NSRegularExpression(pattern: #"URI="([^"]+)""#) else { return line }
+        var result = line
+        let matches = expression.matches(in: line, range: NSRange(line.startIndex..., in: line))
+        for match in matches.reversed() {
+            guard let valueRange = Range(match.range(at: 1), in: result) else { continue }
+            let value = String(result[valueRange])
+            guard let url = URL(string: value, relativeTo: baseURL)?.absoluteURL else { continue }
+            result.replaceSubrange(valueRange, with: mediaTypedGraniteURL(url).absoluteString)
+        }
+        return result
+    }
+
+    private func mediaTypedGraniteURL(_ url: URL) -> URL {
+        guard url.pathExtension.lowercased() == "html",
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.path = String(components.path.dropLast(4)) + "ts"
+        return components.url ?? url
     }
 
     private func resolveVidLink(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async throws -> ResolvedMediaStream {

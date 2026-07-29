@@ -10,7 +10,7 @@ public enum ProviderResolutionState: Equatable {
         switch self {
         case .idle: return "Ready to check"
         case .searching: return "Searching"
-        case .available: return "Stream found"
+        case .available: return "Source returned"
         case .unavailable: return "Unavailable"
         }
     }

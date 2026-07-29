@@ -93,6 +93,20 @@ public struct VideoPlayerContainerView: View {
                 backgroundOpacity: settings.subtitleBgOpacity
             )
 
+            if viewModel.isBuffering && viewModel.duration <= 0 && viewModel.errorMessage == nil {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                    Text("Starting \(viewModel.activeProvider.shortName)…")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                .padding(22)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .allowsHitTesting(false)
+            }
+
             // Gesture Alert Message Popup (e.g. +10s / -10s)
             if let gestureMsg = viewModel.gestureMessage {
                 Text(gestureMsg)
