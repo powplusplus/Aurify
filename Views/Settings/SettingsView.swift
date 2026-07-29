@@ -94,7 +94,7 @@ public struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Aurify", value: "1.1 (2027)")
+                    LabeledContent("Aurify", value: "1.2")
                     LabeledContent("Playback", value: "AVFoundation")
                     Link("Open Z-Stream", destination: URL(string: "https://zstream.mov/")!)
                     Link("Z-Stream source", destination: URL(string: "https://github.com/xp-technologies-dev/p-stream")!)

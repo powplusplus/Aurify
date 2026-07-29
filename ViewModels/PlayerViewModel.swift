@@ -7,6 +7,7 @@ import SwiftUI
 public final class PlayerViewModel: ObservableObject {
     @Published public private(set) var player: AVPlayer?
     @Published public private(set) var isPlaying = false
+    @Published public private(set) var isPlaybackRequested = false
     @Published public private(set) var currentTime: TimeInterval = 0
     @Published public private(set) var duration: TimeInterval = 0
     @Published public var isControlsVisible = true
@@ -22,6 +23,8 @@ public final class PlayerViewModel: ObservableObject {
     @Published public private(set) var availableSources: [StreamSource]
     @Published public private(set) var activeSource: StreamSource?
     @Published public private(set) var activeProvider: ServerProvider
+    @Published public private(set) var providerStates: [ServerProvider: ProviderResolutionState]
+    @Published public private(set) var isResolvingProvider = false
     @Published public private(set) var playbackSpeed: Double
     @Published public var gestureMessage: String?
 
@@ -38,12 +41,20 @@ public final class PlayerViewModel: ObservableObject {
     private var lastProgressSaveTime: TimeInterval = -20
     private var audioSelectionGroup: AVMediaSelectionGroup?
     private var audioOptions: [String: AVMediaSelectionOption] = [:]
+    private var fallbackProviders: [ServerProvider]
+    private var isAttemptingAutomaticFallback = false
+    private var attemptedSourceIDs = Set<UUID>()
+    private var playbackWatchdogTask: Task<Void, Never>?
 
     public init(mediaItem: MediaItem, stream: ResolvedMediaStream, seasonNumber: Int? = nil, episodeNumber: Int? = nil) {
         self.mediaItem = mediaItem
         self.availableSources = stream.sources
         self.availableSubtitles = stream.subtitles
         self.activeProvider = stream.activeProvider
+        self.providerStates = Dictionary(uniqueKeysWithValues: ServerProvider.allCases.map {
+            ($0, $0 == stream.activeProvider ? ProviderResolutionState.available : ProviderResolutionState.idle)
+        })
+        self.fallbackProviders = stream.fallbackProviders
         self.seasonNumber = seasonNumber
         self.episodeNumber = episodeNumber
         self.playbackSpeed = UserSettings.shared.playbackSpeed
@@ -79,12 +90,17 @@ public final class PlayerViewModel: ObservableObject {
 
     public func togglePlayPause() {
         guard let player else { return }
-        if isPlaying {
+        if isPlaying || isPlaybackRequested {
+            isPlaybackRequested = false
+            playbackWatchdogTask?.cancel()
             player.pause()
+            isBuffering = false
         } else {
+            isPlaybackRequested = true
+            errorMessage = nil
             player.playImmediately(atRate: Float(playbackSpeed))
+            armPlaybackWatchdog(for: player.currentItem)
         }
-        isPlaying.toggle()
         resetHideControlsTimer()
     }
 
@@ -132,7 +148,65 @@ public final class PlayerViewModel: ObservableObject {
         let resume = currentTime
         activeSource = source
         pendingResumeTime = resume
-        installPlayer(source: source, autoplay: isPlaying)
+        installPlayer(source: source, autoplay: isPlaying || isPlaybackRequested)
+    }
+
+    @discardableResult
+    public func changeProvider(_ provider: ServerProvider, autoplay: Bool? = nil) async -> Bool {
+        guard provider != .zstreamAuto,
+              provider != activeProvider,
+              !isResolvingProvider else { return false }
+
+        isResolvingProvider = true
+        providerStates[provider] = .searching
+        let resume = currentTime
+        let shouldAutoplay = autoplay ?? (isPlaying || isPlaybackRequested)
+        do {
+            let stream = try await StreamResolver.shared.resolveStream(
+                tmdbId: mediaItem.id,
+                mediaType: mediaItem.mediaType,
+                season: seasonNumber,
+                episode: episodeNumber,
+                preferredProvider: provider
+            )
+            guard let source = stream.sources.first(where: { $0.quality == UserSettings.shared.defaultQuality })
+                    ?? stream.sources.first else {
+                throw StreamResolverError.noPlayableSource
+            }
+
+            if case .unavailable? = providerStates[activeProvider] {
+                // Preserve the failed state so the source sheet explains the automatic switch.
+            } else {
+                providerStates[activeProvider] = .idle
+            }
+            providerStates[provider] = .available
+            availableSources = stream.sources
+            availableSubtitles = stream.subtitles
+            activeProvider = stream.activeProvider
+            fallbackProviders.removeAll { $0 == provider }
+            attemptedSourceIDs.removeAll()
+            activeSource = source
+            selectedSubtitleTrack = nil
+            parsedCues = []
+            activeSubtitleCue = nil
+            pendingResumeTime = resume
+            installPlayer(source: source, autoplay: shouldAutoplay)
+
+            if UserSettings.shared.subtitlesEnabled {
+                let preferred = UserSettings.shared.preferredSubtitleLanguage.lowercased()
+                if let track = stream.subtitles.first(where: { $0.language.lowercased() == preferred }) {
+                    selectSubtitleTrack(track)
+                }
+            }
+            showGestureNotification("Loading from \(provider.rawValue)")
+            isResolvingProvider = false
+            return true
+        } catch {
+            providerStates[provider] = .unavailable(error.localizedDescription)
+            showGestureNotification("\(provider.rawValue) unavailable")
+        }
+        isResolvingProvider = false
+        return false
     }
 
     public func setPlaybackSpeed(_ speed: Double) {
@@ -168,6 +242,8 @@ public final class PlayerViewModel: ObservableObject {
 
     public func cleanup() {
         saveCurrentProgress()
+        isPlaybackRequested = false
+        playbackWatchdogTask?.cancel()
         player?.pause()
         hideControlsTimer?.invalidate()
         if let timeObserverToken, let player {
@@ -179,7 +255,14 @@ public final class PlayerViewModel: ObservableObject {
     }
 
     private func installPlayer(source: StreamSource, autoplay: Bool) {
+        playbackWatchdogTask?.cancel()
         itemCancellables.removeAll()
+        errorMessage = nil
+        duration = 0
+        isBuffering = autoplay
+        isPlaying = false
+        isPlaybackRequested = autoplay
+        attemptedSourceIDs.insert(source.id)
         availableAudioTracks = []
         selectedAudioTrackID = nil
         audioSelectionGroup = nil
@@ -209,7 +292,7 @@ public final class PlayerViewModel: ObservableObject {
 
         if autoplay {
             nextPlayer.playImmediately(atRate: Float(playbackSpeed))
-            isPlaying = true
+            armPlaybackWatchdog(for: item)
         }
     }
 
@@ -218,8 +301,12 @@ public final class PlayerViewModel: ObservableObject {
         player.publisher(for: \.timeControlStatus)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
-                self?.isBuffering = status == .waitingToPlayAtSpecifiedRate
-                self?.isPlaying = status == .playing
+                guard let self else { return }
+                self.isBuffering = self.isPlaybackRequested && status != .playing
+                self.isPlaying = status == .playing
+                if status == .playing {
+                    self.playbackWatchdogTask?.cancel()
+                }
             }
             .store(in: &playerCancellables)
 
@@ -228,10 +315,26 @@ public final class PlayerViewModel: ObservableObject {
             .sink { [weak self] status in
                 guard let self else { return }
                 if status == .readyToPlay {
+                    let itemDuration = item.duration.seconds
+                    if itemDuration.isFinite, itemDuration > 0 {
+                        self.duration = itemDuration
+                    }
                     self.loadAudioTracks(from: item)
                 } else if status == .failed {
-                    self.errorMessage = item.error?.localizedDescription ?? "This source could not be played."
-                    self.isBuffering = false
+                    self.handlePlaybackFailure(
+                        item.error?.localizedDescription ?? "This source could not be played."
+                    )
+                }
+            }
+            .store(in: &itemCancellables)
+
+        item.publisher(for: \.duration)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] itemDuration in
+                guard let self, let item, self.player?.currentItem === item else { return }
+                let seconds = itemDuration.seconds
+                if seconds.isFinite, seconds > 0 {
+                    self.duration = seconds
                 }
             }
             .store(in: &itemCancellables)
@@ -241,9 +344,7 @@ public final class PlayerViewModel: ObservableObject {
             .sink { [weak self] notification in
                 guard let self else { return }
                 let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                self.errorMessage = error?.localizedDescription ?? "This source stopped playing."
-                self.isBuffering = false
-                self.isPlaying = false
+                self.handlePlaybackFailure(error?.localizedDescription ?? "This source stopped playing.")
             }
             .store(in: &itemCancellables)
 
@@ -253,6 +354,8 @@ public final class PlayerViewModel: ObservableObject {
                 guard let self else { return }
                 self.isFinished = true
                 self.isPlaying = false
+                self.isPlaybackRequested = false
+                self.isBuffering = false
                 self.saveCurrentProgress()
                 self.isControlsVisible = true
             }
@@ -291,12 +394,78 @@ public final class PlayerViewModel: ObservableObject {
         }
     }
 
+    private func handlePlaybackFailure(_ message: String) {
+        if isResolvingProvider || isAttemptingAutomaticFallback { return }
+        playbackWatchdogTask?.cancel()
+        isBuffering = false
+        isPlaying = false
+        isPlaybackRequested = false
+
+        if let nextSource = availableSources.first(where: { !attemptedSourceIDs.contains($0.id) }) {
+            let resume = currentTime
+            activeSource = nextSource
+            pendingResumeTime = resume
+            showGestureNotification("Trying \(nextSource.name)")
+            installPlayer(source: nextSource, autoplay: true)
+            return
+        }
+
+        providerStates[activeProvider] = .unavailable(message)
+        guard !fallbackProviders.isEmpty else {
+            errorMessage = message
+            isControlsVisible = true
+            return
+        }
+
+        let provider = fallbackProviders.removeFirst()
+        isAttemptingAutomaticFallback = true
+        gestureMessage = "Trying \(provider.rawValue)…"
+        Task { [weak self] in
+            guard let self else { return }
+            let switched = await self.changeProvider(provider, autoplay: true)
+            self.isAttemptingAutomaticFallback = false
+            if !switched { self.handlePlaybackFailure(message) }
+        }
+    }
+
+    private func armPlaybackWatchdog(for item: AVPlayerItem?) {
+        playbackWatchdogTask?.cancel()
+        guard let item else { return }
+        let startingTime = player?.currentTime().seconds ?? 0
+        let timeoutNanoseconds: UInt64 = activeSource?.isHLS == true
+            ? 30_000_000_000
+            : 15_000_000_000
+        playbackWatchdogTask = Task { [weak self, weak item] in
+            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  let item,
+                  self.player?.currentItem === item,
+                  self.isPlaybackRequested else { return }
+
+            let playbackTime = self.player?.currentTime().seconds ?? 0
+            let madeProgress = playbackTime.isFinite && playbackTime > startingTime + 0.1
+            let itemDuration = item.duration.seconds
+            let hasDuration = itemDuration.isFinite && itemDuration > 0
+            guard !madeProgress || !hasDuration else { return }
+
+            self.handlePlaybackFailure(
+                "This source did not start playing. Aurify tried every available playback source."
+            )
+        }
+    }
+
     private func addTimeObserver(to player: AVPlayer) {
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             let seconds = time.seconds
-            if seconds.isFinite { self.currentTime = seconds }
+            if seconds.isFinite {
+                if seconds > self.currentTime + 0.1 {
+                    self.playbackWatchdogTask?.cancel()
+                }
+                self.currentTime = seconds
+            }
             if let itemDuration = player.currentItem?.duration.seconds, itemDuration.isFinite, itemDuration > 0 {
                 self.duration = itemDuration
                 if let resume = self.pendingResumeTime {

@@ -17,10 +17,16 @@ private struct AirPlayRouteButton: UIViewRepresentable {
 public struct CustomPlayerControlsView: View {
     @ObservedObject public var viewModel: PlayerViewModel
     public let onClose: () -> Void
+    public let onShowProviders: () -> Void
 
-    public init(viewModel: PlayerViewModel, onClose: @escaping () -> Void) {
+    public init(
+        viewModel: PlayerViewModel,
+        onClose: @escaping () -> Void,
+        onShowProviders: @escaping () -> Void
+    ) {
         self.viewModel = viewModel
         self.onClose = onClose
+        self.onShowProviders = onShowProviders
     }
 
     public var body: some View {
@@ -109,6 +115,11 @@ public struct CustomPlayerControlsView: View {
                 .accessibilityLabel("Audio language")
             }
 
+            Button(action: onShowProviders) {
+                playerMenuIcon("rectangle.stack.badge.play.fill")
+            }
+            .accessibilityLabel("Change source")
+
             Menu {
                 ForEach(viewModel.availableSources) { source in
                     Button {
@@ -143,14 +154,14 @@ public struct CustomPlayerControlsView: View {
         HStack(spacing: 38) {
             controlButton(systemName: "gobackward.10", size: 28) { viewModel.skip(seconds: -10) }
             Button { viewModel.togglePlayPause() } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: viewModel.isPlaying || viewModel.isPlaybackRequested ? "pause.fill" : "play.fill")
                     .font(.system(size: 34, weight: .bold))
                     .foregroundStyle(.black)
                     .frame(width: 76, height: 76)
                     .background(.white, in: Circle())
                     .shadow(color: .white.opacity(0.25), radius: 20)
             }
-            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(viewModel.isPlaying || viewModel.isPlaybackRequested ? "Pause" : "Play")
             controlButton(systemName: "goforward.10", size: 28) { viewModel.skip(seconds: 10) }
         }
     }

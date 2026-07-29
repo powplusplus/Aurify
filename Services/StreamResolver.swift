@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -7,11 +10,18 @@ public struct ResolvedMediaStream: Codable, Hashable {
     public let sources: [StreamSource]
     public let subtitles: [SubtitleTrack]
     public let activeProvider: ServerProvider
+    public let fallbackProviders: [ServerProvider]
 
-    public init(sources: [StreamSource], subtitles: [SubtitleTrack], activeProvider: ServerProvider) {
+    public init(
+        sources: [StreamSource],
+        subtitles: [SubtitleTrack],
+        activeProvider: ServerProvider,
+        fallbackProviders: [ServerProvider] = []
+    ) {
         self.sources = sources
         self.subtitles = subtitles
         self.activeProvider = activeProvider
+        self.fallbackProviders = fallbackProviders
     }
 }
 
@@ -91,6 +101,27 @@ private struct VidLinkCaption: Decodable {
 private struct VDRKCaption: Decodable {
     let file: String
     let label: String
+}
+
+private struct GraniteMirror: Decodable {
+    let url: String?
+}
+
+private struct GranitePlaylistEntry: Decodable {
+    let url: String
+    let resolution: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        url = try container.decode(String.self, forKey: .url)
+        if let string = try? container.decode(String.self, forKey: .resolution) {
+            resolution = string
+        } else {
+            resolution = String(try container.decode(Int.self, forKey: .resolution))
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case url, resolution }
 }
 
 private struct CustomResolverPayload: Decodable {
@@ -262,6 +293,11 @@ public actor StreamResolver {
         "Origin": "https://vidlink.pro",
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1"
     ]
+    private let graniteHeaders = [
+        "Referer": "https://vidrock.net/",
+        "Origin": "https://vidrock.net",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1"
+    ]
 
     private init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -285,11 +321,13 @@ public actor StreamResolver {
         let providers: [ServerProvider]
         switch preferredProvider {
         case .zstreamAuto:
-            providers = UserSettings.shared.customResolverURL.isEmpty ? [.vidLink] : [.vidLink, .custom]
+            providers = ServerProvider.nativePlaybackOrder + (UserSettings.shared.customResolverURL.isEmpty ? [] : [.custom])
+        case .granite:
+            providers = [.granite]
         case .vidLink:
             providers = [.vidLink]
         case .custom:
-            providers = [.custom, .vidLink]
+            providers = [.custom]
         }
 
         var failures: [String] = []
@@ -299,6 +337,8 @@ public actor StreamResolver {
                 switch provider {
                 case .zstreamAuto:
                     continue
+                case .granite:
+                    result = try await resolveGranite(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
                 case .vidLink:
                     result = try await resolveVidLink(tmdbId: tmdbId, mediaType: mediaType, season: season, episode: episode)
                 case .custom:
@@ -315,6 +355,163 @@ public actor StreamResolver {
 
         if failures.isEmpty { throw StreamResolverError.noPlayableSource }
         throw StreamResolverError.providerUnavailable(failures.joined(separator: "\n"))
+    }
+
+    private func resolveGranite(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async throws -> ResolvedMediaStream {
+        let path = mediaType == .movie
+            ? "movie/\(tmdbId)"
+            : "tv/\(tmdbId)/\(season!)/\(episode!)"
+        guard let url = URL(string: "https://vidrock.net/api/\(path)") else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        for (field, value) in graniteHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+
+        let mirrors: [String: GraniteMirror] = try await fetchJSON([String: GraniteMirror].self, request: request)
+        var sources: [StreamSource] = []
+        let mirrorOrder = ["Orion", "Atlas", "Nova", "Luna", "Vega", "Lyra", "Hindi"]
+        let orderedNames = mirrors.keys.sorted {
+            (mirrorOrder.firstIndex(of: $0) ?? Int.max) < (mirrorOrder.firstIndex(of: $1) ?? Int.max)
+        }
+        for name in orderedNames {
+            guard let encryptedURL = mirrors[name]?.url,
+                  let rawURL = try? decryptedGraniteURL(encryptedURL),
+                  let mirrorURL = URL(string: rawURL),
+                  !name.localizedCaseInsensitiveContains("Astra") else { continue }
+
+            let playbackURL: URL
+            if mirrorURL.host?.hasSuffix(".workers.dev") == true {
+                guard let normalizedURL = try? await normalizedGraniteHLS(
+                    masterURL: mirrorURL,
+                    headers: graniteHeaders
+                ) else { continue }
+                playbackURL = normalizedURL
+            } else {
+                playbackURL = mirrorURL
+            }
+
+            if name == "Atlas" || rawURL.contains("cdn.vidrock.store/playlist/") {
+                var playlistRequest = URLRequest(url: mirrorURL)
+                for (field, value) in graniteHeaders {
+                    playlistRequest.setValue(value, forHTTPHeaderField: field)
+                }
+                if let entries = try? await fetchJSON([GranitePlaylistEntry].self, request: playlistRequest) {
+                    for entry in entries {
+                        guard let sourceURL = URL(string: entry.url) else { continue }
+                        let quality = StreamQuality.from(providerValue: entry.resolution)
+                        sources.append(StreamSource(
+                            url: sourceURL,
+                            quality: quality,
+                            isHLS: sourceURL.pathExtension.lowercased() == "m3u8",
+                            provider: .granite,
+                            name: quality == .auto ? "Atlas" : "Atlas \(quality.rawValue)",
+                            headers: graniteHeaders
+                        ))
+                    }
+                } else {
+                    sources.append(StreamSource(
+                        url: mirrorURL,
+                        quality: .auto,
+                        isHLS: true,
+                        provider: .granite,
+                        name: name,
+                        headers: graniteHeaders
+                    ))
+                }
+            } else {
+                sources.append(StreamSource(
+                    url: playbackURL,
+                    quality: .auto,
+                    isHLS: true,
+                    provider: .granite,
+                    name: name,
+                    headers: graniteHeaders
+                ))
+            }
+        }
+
+        guard !sources.isEmpty else { throw StreamResolverError.noPlayableSource }
+        return ResolvedMediaStream(
+            sources: deduplicateSources(sources),
+            subtitles: [],
+            activeProvider: .granite
+        )
+    }
+
+    private func normalizedGraniteHLS(masterURL: URL, headers: [String: String]) async throws -> URL {
+        var masterRequest = URLRequest(url: masterURL)
+        for (field, value) in headers {
+            masterRequest.setValue(value, forHTTPHeaderField: field)
+        }
+        let masterData = try await fetchData(request: masterRequest)
+        guard let masterText = String(data: masterData, encoding: .utf8),
+              masterText.contains("#EXTM3U") else {
+            throw StreamResolverError.noPlayableSource
+        }
+
+        let masterLines = masterText.components(separatedBy: .newlines)
+        let mediaURL: URL
+        let mediaText: String
+        if masterText.contains("#EXT-X-STREAM-INF"),
+           let variantPath = masterLines.first(where: { !$0.isEmpty && !$0.hasPrefix("#") }),
+           let variantURL = URL(string: variantPath, relativeTo: masterURL)?.absoluteURL {
+            var variantRequest = URLRequest(url: variantURL)
+            for (field, value) in headers {
+                variantRequest.setValue(value, forHTTPHeaderField: field)
+            }
+            let variantData = try await fetchData(request: variantRequest)
+            guard let variantText = String(data: variantData, encoding: .utf8),
+                  variantText.contains("#EXTM3U") else {
+                throw StreamResolverError.noPlayableSource
+            }
+            mediaURL = variantURL
+            mediaText = variantText
+        } else {
+            mediaURL = masterURL
+            mediaText = masterText
+        }
+
+        let normalizedLines = mediaText.components(separatedBy: .newlines).map { line -> String in
+            guard !line.isEmpty else { return line }
+            if line.hasPrefix("#") {
+                return absoluteHLSAttributeURIs(in: line, relativeTo: mediaURL)
+            }
+            guard let remoteURL = URL(string: line, relativeTo: mediaURL)?.absoluteURL else { return line }
+            return mediaTypedGraniteURL(remoteURL).absoluteString
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AurifyStreams", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let playlistURL = directory.appendingPathComponent("granite.m3u8")
+        try (normalizedLines.joined(separator: "\n") + "\n")
+            .write(to: playlistURL, atomically: true, encoding: .utf8)
+        return playlistURL
+    }
+
+    private func absoluteHLSAttributeURIs(in line: String, relativeTo baseURL: URL) -> String {
+        guard let expression = try? NSRegularExpression(pattern: #"URI="([^"]+)""#) else { return line }
+        var result = line
+        let matches = expression.matches(in: line, range: NSRange(line.startIndex..., in: line))
+        for match in matches.reversed() {
+            guard let valueRange = Range(match.range(at: 1), in: result) else { continue }
+            let value = String(result[valueRange])
+            guard let url = URL(string: value, relativeTo: baseURL)?.absoluteURL else { continue }
+            result.replaceSubrange(valueRange, with: mediaTypedGraniteURL(url).absoluteString)
+        }
+        return result
+    }
+
+    private func mediaTypedGraniteURL(_ url: URL) -> URL {
+        guard url.pathExtension.lowercased() == "html",
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.path = String(components.path.dropLast(4)) + "ts"
+        return components.url ?? url
     }
 
     private func resolveVidLink(tmdbId: Int, mediaType: MediaType, season: Int?, episode: Int?) async throws -> ResolvedMediaStream {
@@ -596,6 +793,45 @@ public actor StreamResolver {
             result.replaceSubrange(matchRange, with: formatted)
         }
         return result.replacingOccurrences(of: "$Number$", with: String(number))
+    }
+
+    private func deduplicateSources(_ sources: [StreamSource]) -> [StreamSource] {
+        var seen = Set<String>()
+        return sources.filter { seen.insert($0.url.absoluteString).inserted }
+    }
+
+    private func decryptedGraniteURL(_ encodedValue: String) throws -> String {
+        #if canImport(CryptoKit)
+        var base64 = encodedValue
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = base64.count % 4
+        if remainder > 0 { base64 += String(repeating: "=", count: 4 - remainder) }
+        guard let combined = Data(base64Encoded: base64), combined.count >= 28 else {
+            throw StreamResolverError.noPlayableSource
+        }
+
+        let keyHex = "7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f"
+        var keyData = Data(capacity: 32)
+        var index = keyHex.startIndex
+        while index < keyHex.endIndex {
+            let next = keyHex.index(index, offsetBy: 2)
+            guard let byte = UInt8(keyHex[index..<next], radix: 16) else {
+                throw StreamResolverError.noPlayableSource
+            }
+            keyData.append(byte)
+            index = next
+        }
+
+        let sealedBox = try AES.GCM.SealedBox(combined: combined)
+        let clearData = try AES.GCM.open(sealedBox, using: SymmetricKey(data: keyData))
+        guard let url = String(data: clearData, encoding: .utf8), !url.isEmpty else {
+            throw StreamResolverError.noPlayableSource
+        }
+        return url
+        #else
+        throw StreamResolverError.providerUnavailable("Granite is unavailable on this platform.")
+        #endif
     }
 
     private func sortSources(_ sources: [StreamSource]) -> [StreamSource] {
